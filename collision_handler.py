@@ -9,7 +9,7 @@ class Grid():
     def __init__(self, grid_length):
         self.__m_grid_length = grid_length 
         self.__m_grid = None
-
+        self
 
     def add(self, primitives):
         if isinstance(primitives, list):
@@ -19,7 +19,7 @@ class Grid():
 
     def build(self):
         for prim_data  in self.__m_data:
-            prim_data.data / self.__m_grid_size
+            np.floor(prim_data.data / self.__m_grid_size)
 
 
         
@@ -28,7 +28,7 @@ class Grid():
 
 
 # impl Hierarchical spatialhashing according to paper https://matthias-research.github.io/pages/publications/tetraederCollision.pdf.
-SPACING_ARG_TYPE = float | typing.Literal["auto"] 
+SPACING_ARG_TYPE = typing.Union[float , typing.Literal["auto"] ]
 
 class SpatialHashing:
     def __init__(self, spacing :  SPACING_ARG_TYPE = "auto", hash_table_size = 10000):
@@ -89,6 +89,7 @@ class SpatialHashing:
         self.__m_data
 
     def precompute(self):
+
         self.__m_grid_size = self.__compute_grid_size()
         self.__put_primitives_onto_grid_cell(self.__m_grid_size)
         self.__compute_hash_table(self.__m_hash_table_size)
