@@ -47,12 +47,13 @@ class HalfEdge:
         self.__m_e2e = [[] for _ in range(len(self.__m_edges))]
 
         self.__m_v2f =  [ [] for _ in range(len(self.__m_v))]
-        self.__m_v2v = [[] for _ in range(len(self.__m_v))]
+        self.__m_v2v = [set() for _ in range(len(self.__m_v))]
 
 
         self.f2v = self.__m_f
 
 
+        # self.__m_edges = igl.edges(self.__m_f)
 
 
         for fi, (i, j, k) in enumerate(self.__m_f):
@@ -147,10 +148,13 @@ class Mesh():
         self.__m_halfedge = HalfEdge(self.__v, self.__f)
         self.__m_halfedge.build()
 
+
+    
     def load_from_file(self, pth : str):
         v, f = igl.read_triangle_mesh(pth)
         self.__v = v 
         self.__f = f
+
 
     @property
     def halfedge(self):

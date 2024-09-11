@@ -4,6 +4,8 @@ import scipy.sparse as sp
 import mesh as mm 
 
 
+import igl 
+
 def cotangent_angle_for_vertex(origin_v0, v1, v2):
     # sin / cos = cot :)
     vec1 = v1 - origin_v0
@@ -58,7 +60,29 @@ def make_laplacian(mesh : mm.Mesh):
             rows.append(vi); cols.append(vi); data.append(-w_sum)
 
     
-    return sp.csr_matrix((data, (rows, cols)), shape=(N,N), dtype=np.float64)
+    return sp.csc_matrix((data, (rows, cols)), shape=(N,N), dtype=np.float64)
 
 
-    
+
+def make_laplacian(mesh : mm.Mesh):
+    """
+        COTANGENT MAT
+    """
+    v= mesh.v 
+    f = mesh.f
+
+    return igl.cotmatrix(v,f)
+
+if __name__ == "__main__":
+    import os , glob 
+    data_path = "D:\\lab\\2022\\mycode\\FaceCaptureWithIK\\data\\ICT-data"
+    neutralpth = os.path.join(data_path, "generic_neutral_mesh.obj")
+    neutral = mm.Mesh()
+    neutral.load_from_file(neutralpth)
+    print(type(make_laplacian(neutral)))
+
+
+
+
+
+
