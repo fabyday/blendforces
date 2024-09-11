@@ -7,7 +7,7 @@ import scipy.sparse as  sp
 import geometry_helper as geo
 from scipy.sparse.linalg import inv
 from sksparse.cholmod import cholesky as spchol
-
+import collision_handler as ch
 
 import functools
 
@@ -278,6 +278,14 @@ class BlendForces:
             func(data, row, col)
             Ai = sp.csc_matrix((data, row, col), shape =(self.__m_vN*3, self.__m_vn*3) , dtype=np.float64)
             self.__m_precomputed_constraint_Ai.append(Ai)
+
+
+
+
+        self.__m_spatial_object = ch.SpatialHashing()
+        self.__m_spatial_object.append_primitives()
+        self.__m_spatial_object.precompute()
+        
             
 
 
@@ -318,19 +326,28 @@ class BlendForces:
         col_indices = []
 
 
+        #disp cons 
         self.__m_b[...] = 0 # reset zero
         self.__displacement_constraints_b(data,  row_indices, col_indices, self.__m_b, self.__m_blendshapes.neutral_pose(), x_t)
         A1, b1 = self.__solve_projective_dynamaics(self.__m_Ai[0], self.__m_b)
 
+        #stretching cons 
         self.__m_b[...] = 0 # reset zero
         self.__stretching_constraint_b(data,  row_indices, col_indices, self.__m_b)
         A2, b2 = self.__solve_projective_dynamaics(self.__m_Ai[1], self.__m_b)
 
         self.__solve_sparse(self.__m_stiffnesses,)
-         
+
+
+        #bending cons 
         self.__m_b[...] = 0 # reset zero
         self.__bend_constraint_b(data,  row_indices, col_indices, self.__m_b)
         A3, b3 = self.__solve_projective_dynamaics(self.__m_Ai[1], self.__m_b)
+
+
+
+        # conatact(collision) cons
+
 
         
 
