@@ -56,31 +56,31 @@ class HalfEdge:
         # self.__m_edges = igl.edges(self.__m_f)
 
 
-        for fi, (i, j, k) in enumerate(self.__m_f):
-            e_offset = fi
+        # for fi, (i, j, k) in enumerate(self.__m_f):
+        #     e_offset = fi
             
-            append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3, i, j)
-            append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 1, j, k)
-            append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 2, k, i)
+        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3, i, j)
+        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 1, j, k)
+        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 2, k, i)
             
-            self.__m_e2e[e_offset*3] += [-1, e_offset*3+1]
-            self.__m_e2e[e_offset*3+1] += [e_offset*3 , e_offset*3 +2]
-            self.__m_e2e[e_offset*3+2] += [e_offset *3+1 , -1]
+        #     self.__m_e2e[e_offset*3] += [-1, e_offset*3+1]
+        #     self.__m_e2e[e_offset*3+1] += [e_offset*3 , e_offset*3 +2]
+        #     self.__m_e2e[e_offset*3+2] += [e_offset *3+1 , -1]
             
-            self.__m_e2f[ e_offset*3   ] = fi
-            self.__m_e2f[ e_offset*3+1 ] = fi
-            self.__m_e2f[ e_offset*3+2 ] = fi
+        #     self.__m_e2f[ e_offset*3   ] = fi
+        #     self.__m_e2f[ e_offset*3+1 ] = fi
+        #     self.__m_e2f[ e_offset*3+2 ] = fi
 
 
 
-            self.__m_v2v[i] += [j,k]
-            self.__m_v2v[j] += [k,i]
-            self.__m_v2v[k] += [i,j]
+        #     self.__m_v2v[i] += [j,k]
+        #     self.__m_v2v[j] += [k,i]
+        #     self.__m_v2v[k] += [i,j]
 
 
-            self.__m_v2f[i].append(fi)  
-            self.__m_v2f[j].append(fi)
-            self.__m_v2f[k].append(fi)
+        #     self.__m_v2f[i].append(fi)  
+        #     self.__m_v2f[j].append(fi)
+        #     self.__m_v2f[k].append(fi)
 
     def v2v(self, v_idx):
         return self.__m_v2v[v_idx]
@@ -115,6 +115,14 @@ class HalfEdge:
     def edge(self, e_idx):
         """return vertex index"""
         return self.__m_edges[e_idx]
+    
+    @property
+    def edges(self):
+        # self.__m_edges
+        self.__m_edges = igl.edges(self.__m_f)
+        return self.__m_edges
+
+
 
             
 
@@ -131,9 +139,14 @@ class Mesh():
     def v(self, vv : np.ndarray):
         self.__v = vv 
     
+
+    def __getitem__(self, idx):
+        return self.__v[idx, :]
+
+
     @property
     def e(self):
-        pass
+        return self.__m_halfedge.edges
     
     @property
     def f(self):

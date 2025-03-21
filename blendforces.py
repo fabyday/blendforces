@@ -1,5 +1,5 @@
 import numpy as np 
-from . import mesh as mm
+import mesh as mm
 import igl 
 import typing 
 import blendshapes
@@ -7,31 +7,52 @@ import scipy.sparse as  sp
 import geometry_helper as geo
 from scipy.sparse.linalg import inv
 from sksparse.cholmod import cholesky as spchol
+import itertools
 import collision_handler as ch
+import logging, sys 
 
 import functools
 
-stiffnesses_args = tuple | typing.Literal["auto"] 
+stiffnesses_args = typing.Union[tuple, str]
 mass_args = typing.Union[typing.List[float], int, np.ndarray]
+
+logger = logging.getLogger()
+
+stream_handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(stream_handler)
+logging.basicConfig(level=logging.DEBUG)
+
+
+def make_sparse_matrix_triplet_function(raw_list, col_list, data_list):
+    def append_data(i, j, val):
+        raw_list.append(3*i + 0); col_list.append(3*j + 0) ; data_list.append(val)
+        raw_list.append(3*i + 1); col_list.append(3*j + 1) ; data_list.append(val)
+        raw_list.append(3*i + 2); col_list.append(3*j + 2) ; data_list.append(val)
+    return append_data
+
+
+
 class BlendForces:
 
 
-    STRETCH_IDX = 0
-    BEND_IDX = 1
-    DISPLACE_IDX = 2
+    STRETCH_IDX :int
+    BEND_IDX:int 
+    DISP_IDX :int 
 
-    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 10.0, tau = 0.01):
+    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 1.0, tau = 0.01):
         self.__m_stiffnesses = stiffnesses
         self.set_iteration_num(iteration_num)
         self.set_step_size(step_size)
         self.reset_simulation()
         self.__m_mass = mass
 
+        self.__m_spatial_hash_object : ch.SpatialHashing = ch.SpatialHashing()
 
         self.__m_tau = 0.01
 
 
         #TODO for testing
+        # self.__m_kp = 1.0
         self.__m_kp = 1.0
         self.__m_ks = 1.0
         self.__m_kb = 1.0
@@ -56,26 +77,43 @@ class BlendForces:
         pass 
     
 
-    
+    def __bend_force(self, v, sp_laplacian, neutral_mesh: mm.Mesh):
+        Ai = self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX]
+        
+        b = np.zeros_like(self.__m_b)
+        self.__bend_constraint_b(b, sp_laplacian, v, neutral_mesh)
+        qq = Ai@v.reshape(-1,1)
+        return (Ai@v.reshape(-1,1) - b)
 
-    def __stretch(self, v, f):
+
+    def __displace_force(self, v, neutral):
+        return v.reshape(-1,1) - neutral.reshape(-1,1)
+    
+    def __stretch_force(self, v, neutral : mm.Mesh):
+        e = neutral.e 
+        v0 = v[e[:, 0], :]
+        v1 = v[e[:, 1], :]
+        
+        
+        vvv = (v0 - v1) - (neutral.v[e[:, 0], :] - neutral.v[e[:, 1], :])
+        # return self.__stretch(v, neutral.e) - self.__stretch(neutral.v, neutral.e)
+        return vvv.reshape(-1,1)
+
+
+    def __stretch(self, v, e):
         """
             v : N x 3
             f : K x 3
 
-            e1 e2 e3 is column vectors
             return 
-                shapes : N x 3
-                [ e0_length | e1_length | e3_length ] 
+                shapes : N
+                [ e_length ] 
             
         """
-        v0 = v[f[:, 0], :]
-        v1 = v[f[:, 1], :]
-        v2 = v[f[:, 2], :]
+        v0 = v[e[:, 0], :]
+        v1 = v[e[:, 1], :]
         e1 = np.sqrt(np.sum((v0 - v1)**2, axis=-1))
-        e2 = np.sqrt(np.sum( (v1 - v2) **2, axis=-1))
-        e3 = np.sqrt(np.sum( (v2 - v0) **2, axis=-1))
-        return np.hstack([e1, e2, e3])
+        return e1
 
 
 
@@ -84,10 +122,10 @@ class BlendForces:
         """
             b = output
         """
-        assert(len(v) == len(neutral_v), "len() size between neutral v and v is diff")
+        assert(len(v) == len(neutral_v) and "len() size between neutral v and v is diff")
 
 
-        b += neutral_v.shape(-1,1)
+        b += k_p*neutral_v.reshape(-1,1)
 
 
     def __displacement_constraints_A(self, data : list,  row_indices : list, col_indices : list, k_p : float, neutral_v : np.ndarray):
@@ -101,11 +139,10 @@ class BlendForces:
             # Its term be like here. 
             #   I x = b
         """
-        new_ind_row = row_indices[-1] + 1
-        data += [1.0 for _ in range(len(neutral_v))]
-        row_indices += [new_ind_row + i for i in range(len(neutral_v))]
-        col_indices += [ i for i in range(len(neutral_v))]
-        
+        append_data = make_sparse_matrix_triplet_function(row_indices, col_indices, data)
+
+        for i in range(len(neutral.v)):
+            append_data(i, i, -k_p)
 
         return data, row_indices, col_indices
 
@@ -118,13 +155,17 @@ class BlendForces:
             vv : current vertices
             netural_vv : rest pose shape.
         """
+        
+        neutral_vv = neutral_mesh.v
+        L = sp_laplacian
 
-        neutral_vv = neutral_vv.v
+        
+
         S_i = np.empty((3,3), dtype=np.float64)
-        RR = []
-        for vidx_i in range(len(neutral_vv.v)):
+        self.RR = []
+        for vidx_i in range(len(neutral_vv)):
             S_i[...] = 0.0
-            for vidx_j in neutral_vv.halfedge.v2v(vidx_i):
+            for vidx_j in neutral_mesh.halfedge.v2v(vidx_i):
                 wij = sp_laplacian[vidx_i,vidx_j]
                 e_ij = vv[vidx_i] - vv[vidx_j]
                 e_prime_ij = neutral_vv[vidx_i] - neutral_vv[vidx_j]
@@ -135,19 +176,19 @@ class BlendForces:
                 # u[-1, -1]
                 # R_i = 
 
-            RR.append(R_i)
+            self.RR.append(R_i)
         
         # reuse it 
         Rij = S_i
 
         index = 0 
         b_coeff = np.empty((3,1))
-        for vidx_i in range(len(neutral_vv.v)):
+        for vidx_i in range(len(neutral_mesh.v)):
             Rij[...]  = 0.0
             b_coeff[...] = 0.0
-            for vidx_j in neutral_vv.halfedge.v2v(vidx_i):
+            for vidx_j in neutral_mesh.halfedge.v2v(vidx_i):
                 w_ij = -sp_laplacian[vidx_i, vidx_j ] #
-                Rij = (RR[vidx_i] + RR[vidx_j])
+                Rij = (self.RR[vidx_i] + self.RR[vidx_j])
                 e_ij = vv[vidx_i] - vv[vidx_j]
             
                 b_coeff += w_ij*(Rij @ e_ij.reshape(-1,1))
@@ -163,18 +204,58 @@ class BlendForces:
         row, col = sp_laplacian.nonzero()
         dt = sp_laplacian.data
 
-
-        row_offset =row_indices[-1] + 1
-        row += row_offset 
+        append_data = make_sparse_matrix_triplet_function(row_indices, col_indices, data)
+        # row_offset =row_indices[-1] + 1
+        # row += row_offset 
         data.extend(dt)
         row_indices.extend(row)
         col_indices.extend(col)
-        return 
+        return row_indices, col_indices, data
         
-    def __stretching_constraint_b(self, b, v : np.ndarray, f, neutral_rest_length : np.ndarray):
-        edges = self.__stretch(v, f)
+    def __stretching_constraint_b(self, b, v : np.ndarray, e, neutral_rest_length : np.ndarray):
+        """
+            e : edge index
+            v : current mesh 
+
+
+        """
+        # e_idx1 = e[:, 0]
+        # e_idx2 = e[:, 1]
+        # v1 = v[e_idx1, : ]
+        # v2 = v[e_idx2, : ]
+        # spring = v2-v1 
+        # edge_length = np.linalg.norm(spring,axis=-1 )
+        # # spring_length = np.linalg.norm(spring)
+        # # normalized_spring = spring / edge_length[..., None]
+        # normalized_spring = spring / edge_length[..., None ]
+        # delta =  (self.__m_nuetral_rest_stretch - edge_length ) * 0.5
+        # direction = delta[..., None]*normalized_spring
+        # pi = v1 + direction
+        # pj = v2 - direction
         
-        b = neutral_rest_length/ edges
+        # for i, j in e:
+            # b[3*i : 3*i+3, :] += self.__m_ks * 0.5 * ( pi[i, :] - pj[j, :] ).reshape(-1,1)
+            # b[3*j : 3*j+3, :] += self.__m_ks * 0.5 * ( pj[j, :] - pi[i, :] ).reshape(-1,1)
+
+        nv = self.__m_blendshapes.neutral_pose()
+        for i, j in e:
+            v1 = v[i, :]
+            v2 = v[j, :]
+            spring = v2 - v1
+            length = np.linalg.norm(spring, axis= - 1 )
+            normalized_spring = spring / length
+            n_length = np.linalg.norm(nv[j, :] - nv[i, :], axis=-1)
+            delta = (n_length - length)*0.5
+            direction = delta[..., None] * normalized_spring
+            pi = v1 + direction
+            pj = v2 - direction
+            b[3*i : 3*i+3, :] += self.__m_ks * 0.5 * ( pi - pj ).reshape(-1,1)
+            b[3*j : 3*j+3, :] += self.__m_ks * 0.5 * ( pj - pi ).reshape(-1,1)
+
+
+
+
+        
         
 
     def __stretching_constraint_A(self, data :list, row_indices : list, col_indices : list, ks : float ,v : np.ndarray, edges ):
@@ -196,24 +277,27 @@ class BlendForces:
             Laplacian used for blending and smooth curvature.
 
         """
-        # elastic forces.
+        
+        append_data = make_sparse_matrix_triplet_function(row_indices, col_indices, data)
 
-        new_row_offset = row_indices[-1] + 1
-        data += len(edges)*[ks*1,ks*(-1)]
+
 
         for i, j in edges:
-            row_indices.append(new_row_offset)
-            col_indices.append(i)
-            col_indices.append(j)
-            new_row_offset += 1
-
+            # append_data(i, i, -1.0 * self.__m_ks * 0.5); append_data(i, j, 1.0 * self.__m_ks * 0.5)
+            # append_data(j, j, -1.0 * self.__m_ks * 0.5); append_data(j, i, 1.0 * self.__m_ks * 0.5)
+            append_data(i, i, -1.0 * self.__m_ks* 0.5); append_data(i, j, 1.0 * self.__m_ks* 0.5)
+            append_data(j, j, -1.0 * self.__m_ks* 0.5); append_data(j, i, 1.0 * self.__m_ks* 0.5)
+            # append_data(i, i, -1.0 * self.__m_ks); append_data(i, j, 1.0 * self.__m_ks)
+            # append_data(j, j, -1.0 * self.__m_ks); append_data(j, i, 1.0 * self.__m_ks)
 
     
 
     def __contact_reponse_b(self):
         pass
-    def __contact_reponse_A(self):
-        pass
+    def __contact_reponse_A(self, data, row, col):
+        v_indice = self.__m_spatial_hash_object.query()
+
+        
 
 
 
@@ -222,19 +306,29 @@ class BlendForces:
     def __compute_mass_matrix(self):
         N, _ = self.__m_blendshapes.neutral_pose().shape
 
-        diag = np.empty((N), dtype=np.float64)
+        diag = np.empty((N*3), dtype=np.float64)
         diag[...] = self.__m_mass
-        self.__m_sp_mass_matrix =  sp.sparse.spdiags(diag, 0, diag.size, diag.size)
+        self.__m_sp_mass_matrix =  sp.spdiags(diag, 0, diag.size, diag.size).tocsc()
+        self.__m_sp_mass_matrix_inv = sp.spdiags(1.0/diag, 0, diag.size, diag.size).tocsc()
         return self.__m_sp_mass_matrix
 
     def __precompute_neutral_pose_constants(self):
         self.__compute_mass_matrix()
-        self.__m_nuetral_rest_stretch = self.__stretch(self.__m_mesh.v, self.__m_mesh.f)
-        self.__m_sp_laplacian_matrix = geo.make_laplacian(self.__m_blendshapes.neutral_pose())
+        self.__m_nuetral_rest_stretch = self.__stretch(self.__m_blendshapes.neutral_pose(), self.__m_blendshapes.neutral_mesh().e)
+        self.__m_sp_laplacian_matrix = geo.make_laplacian(self.__m_blendshapes.neutral_mesh())
+
+
+        self.__m_bs_expression_matrix = self.__m_blendshapes.expression_pose()
+        self.__m_bs_netural_pose = self.__m_blendshapes.neutral_pose().reshape(-1,1)
+
+        self.__m_bs_selectec_marker_expression_matrix = self.__m_blendshapes.expression_pose(self.__m_marker_indices)
+        self.__m_bs_selected_netural_pose = self.__m_blendshapes.neutral_pose()[self.__m_marker_indices, :].reshape(-1,1)
+
 
 
     def set_step_size(self, size : float):
         self.__m_step_size = size
+
     def set_damping_factor(self, damp_factor :float):
         self.__m_damping_factor = max(min(damp_factor, 1.0), 0.0)
 
@@ -256,64 +350,84 @@ class BlendForces:
 
 
     def precompute(self):
-        self.__neutral_pose_rest_length, self.__lapalcian_matrix = self.__precompute_neutral_pose_constants()
+        self.__precompute_neutral_pose_constants()
 
         self.__m_vN, *_ = self.__m_blendshapes.neutral_pose().shape
         self.__m_b = np.empty((3*self.__m_vN,1), dtype=np.float64)
         
 
-        self.__m_Ai = sp.identity(self.__m_vn, dtype=np.float64)
+        self.__m_Ai = sp.identity(self.__m_vN, dtype=np.float64)
         self.__m_Bi = self.__m_Ai  # Ai == Bi (only affect numerical solution procedure.)
-    
+        print(self.__m_blendshapes.neutral_mesh().e)
         func_list = []
-        func_list += [functools.partial(self.__stretching_constraint_A, ks=self.__m_ks, v = self.__m_blendshapes.neutral_pose(), edges = )]
-        func_list += [functools.partial(self.__bend_constraint_A,sp_laplacian = self.__m_sp_laplacian_matrix, neutral_vv  = self.__m_blendshapes.neutral_pose() )]
+        func_list += [functools.partial(self.__stretching_constraint_A, ks=self.__m_ks, v = self.__m_blendshapes.neutral_pose(), edges = self.__m_blendshapes.neutral_mesh().e) ]
+        # func_list += [functools.partial(self.__bend_constraint_A, sp_laplacian = self.__m_sp_laplacian_matrix, neutral_vv  = self.__m_blendshapes.neutral_pose())]
+        # func_list += [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
         func_list += [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
+        
+        BlendForces.STRETCH_IDX = 0
+        BlendForces.BEND_IDX = 1
+        BlendForces.DISP_IDX = 2
+
 
         self.__m_precomputed_constraint_Ai = []
+        data = []
+        row = []
+        col = []
         for func in func_list:
-            data = []
-            row = []
-            col = []
             func(data, row, col)
-            Ai = sp.csc_matrix((data, row, col), shape =(self.__m_vN*3, self.__m_vn*3) , dtype=np.float64)
-            self.__m_precomputed_constraint_Ai.append(Ai)
+            # Ai = sp.csc_matrix((data, (row, col)), shape = (self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
+            # self.__m_precomputed_constraint_Ai.append(Ai)
 
 
+        self.__m_As_sum = sp.csc_matrix((data, (row, col)), shape = (self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
+        # self.__m_As_sum = functools.reduce(lambda Asum, cur : Asum + cur, self.__m_precomputed_constraint_Ai, sp.csc_matrix(self.__m_precomputed_constraint_Ai[0].shape, dtype=np.float64))
 
-
-        self.__m_spatial_object = ch.SpatialHashing()
-        self.__m_spatial_object.append_primitives()
-        self.__m_spatial_object.precompute()
+        # self.__m_spatial_object = ch.SpatialHashing()
+        # self.__m_spatial_object.append_primitives()
+        # self.__m_spatial_object.precompute()
         
+        I = sp.identity(self.__m_sp_mass_matrix.shape[0]).tocsc()
+        h = self.__m_step_size
+        h2 = self.__m_step_size**2
+        M_inv = self.__m_sp_mass_matrix_inv
+        
+        tmp1 = self._tmp1 = (I -  h2 * M_inv@ self.__m_As_sum)
+        
+        # phi = tmp1 @ tmp2 
             
+        self.__m_precomputed_I_Asums = spchol(tmp1)
+        print("precompute")
 
 
-
-    def add_marker_index(self, index_list : list[int]):
+    def add_marker_index(self, index_list : typing.Union[typing.List[int], np.ndarray]):
         self.__m_marker_indices = index_list
-        data = [1 for _ in len(self.__m_marker_indices)]
-        row = [ i for i in range(len(self.__m_marker_indices))]
-        col = self.__m_marker_indices
+        # data = [1 for _ in (self.__m_marker_indices)]
+        # row = [ i for i in range(len(self.__m_marker_indices))]
+        # col = self.__m_marker_indices
 
+        data = []
+        rows = [] 
+        cols = []
+        
+        marker_len = len(self.__m_marker_indices)
+        # append_data = make_sparse_matrix_triplet_function(rows, cols, data)
+
+        row = 0 
+        def append_data(i, j, val):
+            rows.append(3*i     ); cols.append(3*j + 0) ; data.append(val)
+            rows.append(3*i + 1 ); cols.append(3*j + 1) ; data.append(val)
+            rows.append(3*i + 2 ); cols.append(3*j + 2) ; data.append(val)
+        for i in  self.__m_marker_indices:
+            append_data(row    , i  , 1)
+            row += 1
+        
         N = len(self.__m_blendshapes.neutral_pose())
-        self.__M_S_sp_mat = sp.csc_matrix((data, (row,col)), shape=(len(self.__m_marker_indices),N), dtype=np.float64) 
+        self.__M_S_sp_mat = sp.csc_matrix( (data, (rows, cols)), shape=(marker_len*3, N*3), dtype=np.float64) 
         
 
 
 
-    def __solve_projective_dynamaics( A : sp.csc_matrix, b : np.ndarray, x : np.ndarray, k : float):
-        """
-            k : factor
-        """
-        
-        chol = chol(-k*(A.T))
-        pi = chol(-k*(A.T@A@x + b))
-
-        Ai = -k*A.T@A 
-        bi = -k*A.T@pi        
-
-        return Ai, bi
 
     def __linearlize_forces(self, x_t):
         """
@@ -321,134 +435,134 @@ class BlendForces:
             A_i = -k*F_i.T@F_i
             b_i = -k*F_i.T@G_i@p_i  
         """
-        data = [] 
-        row_indices = []
-        col_indices = []
-
-
         #disp cons 
-        self.__m_b[...] = 0 # reset zero
-        self.__displacement_constraints_b(data,  row_indices, col_indices, self.__m_b, self.__m_blendshapes.neutral_pose(), x_t)
-        A1, b1 = self.__solve_projective_dynamaics(self.__m_Ai[0], self.__m_b)
-
+        self.__m_b[...] = 0
+        self.__displacement_constraints_b(self.__m_b, self.__m_kp, self.__m_blendshapes.neutral_pose(), x_t)
+        # A1, b1 = self.__solve_projective_dynamaics(self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX], self.__m_b, self.__m_ks)
+        
         #stretching cons 
-        self.__m_b[...] = 0 # reset zero
-        self.__stretching_constraint_b(data,  row_indices, col_indices, self.__m_b)
-        A2, b2 = self.__solve_projective_dynamaics(self.__m_Ai[1], self.__m_b)
-
-        self.__solve_sparse(self.__m_stiffnesses,)
+        self.__stretching_constraint_b(self.__m_b, x_t, self.__m_blendshapes.neutral_mesh().e, self.__m_nuetral_rest_stretch)
 
 
         #bending cons 
-        self.__m_b[...] = 0 # reset zero
-        self.__bend_constraint_b(data,  row_indices, col_indices, self.__m_b)
-        A3, b3 = self.__solve_projective_dynamaics(self.__m_Ai[1], self.__m_b)
+        # self.__bend_constraint_b(self.__m_b, self.__m_sp_laplacian_matrix, x_t ,self.__m_blendshapes.neutral_mesh())
 
 
 
-        # conatact(collision) cons
+        # conatact(collision) cons  
+        # TODO 
 
 
         
-
         
-        return A1 + A2 + A3, b1 + b2 + b3
+        return self.__m_b
 
 
 
 
     def __static_solve(self, marker_pose):
-        A = self.__m_blendshapes.expression_pose()
-        neutral = self.__m_blendshapes.neutral_pose()
-        A = A[self.__m_marker_indices, :]
-        w = np.linalg.solve( A.T@A, A.T@(marker_pose - neutral) )
+        A = self.__m_bs_selectec_marker_expression_matrix
+        neutral = self.__m_bs_selected_netural_pose
+        
+        
+        b = marker_pose.reshape(-1,1) - neutral
+        
+
+        w = np.linalg.solve( A.T@A, A.T @ b )
         w = np.clip(w, a_min=0.0, a_max=1.0)
         return self.__m_blendshapes.make_pose_by_weight(w)
         
 
     def solve_phi_yt(self, Asums, bsums, B, prev_x_t_1, prev_x_acc):
-        I = sp.identity(len(self.__m_sp_mass_matrix))
+        """
+            Asum : precomuted strecth, disp, bend, contact constraints coeff
+            bsum : linearize forces
+            B : blendshapes
+            prev_xt_t_1 : prev pos
+            prev_x_acc : prev acc
+        """
+
         h = self.__m_step_size
         h2 = self.__m_step_size**2
-        M_inv = (1.0/self.__m_sp_mass_matrix)
-        tmp1 = inv(I -  h2 * M_inv@Asums)
-        tmp2 = h2@M_inv @ B
-        phi = tmp1 @ tmp2 
+        M_inv = self.__m_sp_mass_matrix_inv
         
-
-        yt = tmp1@(prev_x_t_1, h*prev_x_acc + h2*M_inv@bsums)
-
+        
+        phi = self.__m_precomputed_I_Asums(h2 * M_inv @ B)
+        yt = self.__m_precomputed_I_Asums(prev_x_t_1.reshape(-1,1) + h*prev_x_acc.reshape(-1,1) + (h2*M_inv@bsums).reshape(-1,1) )
         return phi, yt
 
-    
+
     def solve_ut(self, phi, yt, dt):
         S = self.__M_S_sp_mat
 
         S_Phi = S @ phi
         S_Phi_T_S_Phi = S_Phi.T @ S_Phi
-        factor= spchol(S_Phi_T_S_Phi)
-        result_u = factor(S_Phi.T@ (dt - S@yt))
+
+        dtSy = dt.reshape(-1,1) - S@yt
+        S_Phi_dtSy = S_Phi.T@(dtSy)
+
+        res =np.linalg.lstsq(S_Phi, dtSy)
+        result_u = np.linalg.solve(S_Phi_T_S_Phi, S_Phi_dtSy)
         return result_u
         
-    def __system_forces(self, x):
+
+    
         
-        self.__m_precomputed_Ai_list = []
-
-
-
-        func_list = [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp , neutral_v = self.__m_blendshapes.neutral_pose())]
-        func_list = [functools.partial(self.__stretching_constraint_A, k_p = self.__m_kp , neutral_v = self.__m_blendshapes.neutral_pose())]
-        func_list = [functools.partial(self.__bend_constraint_A, k_p = self.__m_kp  sp_laplacian =  self.__m_sp_laplacian_matrix, neutral_vv =self.__m_blendshapes.neutral_pose() )]
-        self.__stretching_constraint_A(data)
         
-        self.__displacement_constraints_A(data, rows, cols, self.__m_kp, self.__m_blendshapes.neutral_pose())
-        for func in func_list:
-            data = []
-            rows = []
-            cols = []
-            func(data, rows, cols)
-            self.__m_precomputed_Ai_list.append(sp.csc_matrix((data, (rows, cols)), dtype=np.float64))
-
 
 
     
 
 
-    def simulate_time_step(self, x_prev, x_acc_prev, u_t):
+    def simulate_time_step(self, x_prev, x_acc_prev, u_t, phi, yt):
+        # appx_x_t = self.phi@u_t + self.y_t
+        
+        # x_t2 = phi@u_t +yt
+        # x_t = self.__m_precomputed_I_Asums(  phi@u_t +yt )
+        x_t = phi@u_t +yt
+        x_acc_t = (x_t - x_prev.reshape(-1,1))/self.__m_step_size
+        
+        # self.__m_As_sum @ appx_x_t + 
 
-        expr_poses = self.__m_blendshapes.expression_pose()
-        x_acc_t = x_acc_prev + self.__m_step_size*(1.0/self.__M_S_sp_mat)@(expr_poses@u_t + self.__system_forces(x_t))
-        x_t = x_acc_t + x_prev 
+        # force = (fext + sys_f)
+        # s = (self.__m_step_size*(self.__m_sp_mass_matrix_inv ) @ force)
+        # print(s.shape)
+        # x_acc_t = x_acc_prev + (s).reshape(-1,3)
+        # x_t = x_prev + self.__m_step_size * x_acc_t
+        return x_t, x_acc_t
 
-        return x_t, x_acc_prev
-
-    def update(self, new_marker_pos):
+    def update(self,  new_marker_pos):
         if self.__m_first_iter_flag:
             self.__m_first_iter_flag = False 
             self.__x_prev = self.__static_solve(new_marker_pos)
-            self.__x_acc_prev = 0 
+            self.__x_acc_prev = np.zeros_like(self.__x_prev)
+      
 
-        for _ in range(self.__m_iteration_num):
-            x_t = self.__x_prev + self.__m_step_size* self.__x_acc_prev
-            A_sums, b_sums = self.__linearlize_forces(x_t)
-
-            if self.__m_As_sum is None :
-                self.__m_As_sum = A_sums
-                self.__m_bs_sum = b_sums
-            else:
-                self.__m_As_sum = A_sums
-                self.__m_bs_sum = b_sums
+        x_t = self.__x_prev + self.__m_step_size* self.__x_acc_prev
+        for iter_n in range(self.__m_iteration_num):
+            logger.debug("%d", iter_n)
+            self.__linearlize_forces(x_t) # update self.__m_b 
             
-            phi, y_t = self.solve_phi_yt(self.__m_As_sum, self.__m_bs_sum )
-            u_t = self.solve_ut(phi, y_t, new_marker_pos)
-            x_t, x_acc_t = self.simulate_time_step(self.__x_prev, self.__x_acc_prev, u_t)
-
+            self.phi, self.y_t = self.solve_phi_yt(self.__m_As_sum, self.__m_b, \
+                                         B = self.__m_bs_expression_matrix, \
+                                         prev_x_t_1= self.__x_prev, prev_x_acc= self.__x_acc_prev)
+            u_t = self.solve_ut(self.phi, self.y_t, new_marker_pos)
+            u_t = np.clip(u_t, 0.0, 1.0)
+            # print(u_t)
+            x_t, x_acc_t = self.simulate_time_step(self.__x_prev, self.__x_acc_prev, u_t,  self.phi, self.y_t)
+            x_t, x_acc_t = x_t.reshape(-1,3), x_acc_t.reshape(-1,3)
+            
+            # x_t = self.__m_blendshapes.make_pose_by_weight(u_t).reshape(-1,3)
+            # x_acc_t = np.zeros_like(self.__x_prev) 
+            
         self.__x_prev, self.__x_acc_prev = x_t, x_acc_t
         return x_t
 
 
 if __name__ == "__main__":
     import os , glob 
+
+    import subprocess
     data_path = "D:\\lab\\2022\\mycode\\FaceCaptureWithIK\\data\\ICT-data"
     neutral_pth = os.path.join(data_path, "generic_neutral_mesh.obj")
     shapes_path = os.path.join(data_path, "shapes")
@@ -461,18 +575,89 @@ if __name__ == "__main__":
         m.load_from_file(fpth)
         bs_list.append(m)
         
+    import asyncio
+    
+    # sub = subprocess.Popen("python ./viewer.py", stdin = subprocess.PIPE)
 
+    lmk_idx = [1278,1272,12,1834,243,781,2199,1447,966,3661,4390,3022,2484,4036,2253,3490,3496,268,493,1914,2044,1401,3615,4240,4114,2734,2509,978,4527,4942,4857,1140,2075,1147,4269,3360,1507,1542,1537,1528,1518,1511,3742,3751,3756,3721,3725,3732,5708,5695,2081,0,4275,6200,6213,6346,6461,5518,5957,5841,5702,5711,5533,6216,6207,6470,5517,5966,]
 
     bshapes = blendshapes.Blendshapes(neutral, bs_list)
+    bshapes.build()
     bb = BlendForces()
     bb.set_blendshapes(bld=bshapes)
-    bb.add_marker_index()
-    
+    bb.add_marker_index(lmk_idx)
     bb.precompute()
+    xt = neutral[lmk_idx]
+    # for it in range(50) : 
+    a = (np.sin(np.linspace(0, 100, 3000))*20).reshape(-1,1)
+    av = np.hstack([np.zeros_like(a), a, np.zeros_like(a)])
+    ii = 0 
 
+
+    def __static_solve(marker_pose):
+        A = bshapes.expression_pose(lmk_idx)
+        neutral = bshapes.neutral_pose()[lmk_idx, :]
+        
+
+        b = marker_pose.reshape(-1,1) - neutral.reshape(-1,1)
+        
+        w = np.linalg.solve( A.T@A, A.T @ b )
+        w = np.clip(w, a_min=0.0, a_max=1.0)
+        return bshapes.make_pose_by_weight(w)
+    w = np.zeros((len(bs_list), 1))
+    print(len(bs_list))
+    
+    
+    
+    async def run_sub(queue, loop)    :
+        print(loop, "ewew")
+        proc = await loop.run_in_executor(
+                None, 
+                subprocess.Popen, 
+                "python ./viewer.py", 0, None,
+                subprocess.PIPE,       # stdin,
+                
+            )
+        # proc = subprocess.Popen("python ./viewer.py", stdin=subprocess.PIPE)
+        ii = 0 
+        while True:
+            data = await queue.get()
+            proc.stdin.write(data)
+            proc.stdin.flush()
+            print(f"put {ii}")
+            ii+=1
 
 
     
-    xt = bb.update()
+    def run_main(queue, loop):
+        while True : 
+            # print(it)
+            # xt = xt[lmk_idx]
+            global ii
+            ii += 1
+            aai = ii % len(a)
+            marker = neutral[lmk_idx] + av[aai, :].reshape(1,-1)
+            
+            # xt = bb.update(marker)
+            xt = __static_solve(marker)
+            # isi = ii % len(w)
+            # www = np.zeros_like(w)
+            # www[isi, :] = 1.0
+            # xt = bshapes.make_pose_by_weight(www)
+            # a = bshapes.expression_pose(lmk_idx).shape[-1]
+            asyncio.run_coroutine_threadsafe(queue.put(xt), loop)
+            print(f"{ii}")
+            # mesh = bshapes.make_pose_by_weight(np.random.uniform(0, 1, size = a))
+            # sub.stdin.write(xt.tobytes())
+            # sub.stdin.write(xt.astype(np.float64).tobytes())
+            # sub.stdin.write(mesh.astype(np.float64).tobytes())
 
-    
+    import threading
+    queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+    print(loop, "init")
+    calculation_thread = threading.Thread(target=run_main, args=(queue,loop))
+    calculation_thread.daemon = True  # Ensure the thread exits when the main program exits
+    calculation_thread.start()
+
+    loop.run_until_complete(run_sub(queue,loop))
