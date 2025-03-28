@@ -1,7 +1,7 @@
 import igl 
 
 import numpy as np 
-import tetgen
+# import tetgen
 import typing 
 class Mesh:
     pass 
@@ -177,19 +177,19 @@ class Mesh():
 
 
 
-class TetrahedronMesh():
+# class TetrahedronMesh():
     
-    def load_from_mesh(self, mesh : Mesh):
-        tet = tetgen.TetGen(mesh.v, mesh.f)
-        self.__m_node , self.__m_elem = tet.tetrahedralize(verbose=1)
+#     def load_from_mesh(self, mesh : Mesh):
+#         tet = tetgen.TetGen(mesh.v, mesh.f)
+#         self.__m_node , self.__m_elem = tet.tetrahedralize(verbose=1)
         
 
-        print(self.__m_elem)
+#         print(self.__m_elem)
 
 
-    def bulid_individual_aabb_list(self):
-        for elem in self._m_node:
-            elem
+#     def bulid_individual_aabb_list(self):
+#         for elem in self._m_node:
+#             elem
 
 
 

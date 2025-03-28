@@ -1,7 +1,6 @@
 
 import numpy as np 
 import mesh as mm
-import tetgen
 class PrimitiveContainer:
     def __init__(self, copy = False ):
         self.__m_data = None 

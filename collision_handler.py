@@ -3,7 +3,6 @@ import primitives as prim
 import typing 
 import collections 
 import numpy as np 
-import tetgen
 import mesh as mm
 
 # class Grid():

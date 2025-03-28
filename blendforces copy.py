@@ -564,12 +564,12 @@ if __name__ == "__main__":
     import os , glob 
     import cv2
     import subprocess
-    import mediapipe as mp
-    import numpy as np
+    # import mediapipe as mp
+    # import numpy as np
     
-    # MediaPipe Face Mesh 초기화
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
+    # # MediaPipe Face Mesh 초기화
+    # mp_face_mesh = mp.solutions.face_mesh
+    # face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
 
     # dlib 68개 landmark 인덱스 (MediaPipe 468개 포인트 중 dlib에 해당하는 것만 선택)
     DLIB_68_IDX = [162,234,93,58,172,136,149,148,152,377,378,365,397,288,323,454,389,71,63,105,66,107,336,
@@ -652,16 +652,7 @@ if __name__ == "__main__":
             ret, frame = cap.read()
             if not ret:
                 break
-        # BGR → RGB 변환 (MediaPipe는 RGB 입력 필요)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = face_mesh.process(rgb_frame)
-
-        if result.multi_face_landmarks:
-            for face_landmarks in result.multi_face_landmarks:
-                for idx in DLIB_68_IDX:
-                    landmark = face_landmarks.landmark[idx]
-                    x, y = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
-                    cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)  # 랜드마크 그리기
+        
         
             # print(it)
             # xt = xt[lmk_idx]
@@ -672,17 +663,9 @@ if __name__ == "__main__":
             
             # xt = bb.update(marker)
             xt = __static_solve(marker)
-            # isi = ii % len(w)
-            # www = np.zeros_like(w)
-            # www[isi, :] = 1.0
-            # xt = bshapes.make_pose_by_weight(www)
-            # a = bshapes.expression_pose(lmk_idx).shape[-1]
+            
             asyncio.run_coroutine_threadsafe(queue.put(xt), loop)
-            # print(f"{ii}")
-            # mesh = bshapes.make_pose_by_weight(np.random.uniform(0, 1, size = a))
-            # sub.stdin.write(xt.tobytes())
-            # sub.stdin.write(xt.astype(np.float64).tobytes())
-            # sub.stdin.write(mesh.astype(np.float64).tobytes())
+           
 
     import threading
     queue = asyncio.Queue()
