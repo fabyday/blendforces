@@ -17,6 +17,38 @@ import numpy as np
 import sys                    # we'll need this later to run our Qt application
 from PyQt5.QtCore import pyqtSignal, QObject
 import time
+def create_uv_sphere_with_normals(center, radius=0.01, stacks=16, slices=16):
+    vertices = []
+    normals = []
+    indices = []
+
+    for i in range(stacks + 1):
+        phi = np.pi * i / stacks
+        for j in range(slices + 1):
+            theta = 2 * np.pi * j / slices
+            x = np.sin(phi) * np.cos(theta)
+            y = np.sin(phi) * np.sin(theta)
+            z = np.cos(phi)
+
+            # 정점 위치
+            pos = center + radius * np.array([x, y, z])
+            vertices.append(pos)
+
+            # 노멀은 중심 기준 방향
+            normals.append(np.array([x, y, z]))  # 단위벡터라 그대로 사용
+
+    vertices = np.array(vertices, dtype=np.float32)
+    normals = np.array(normals, dtype=np.float32)
+
+    for i in range(stacks):
+        for j in range(slices):
+            first = i * (slices + 1) + j
+            second = first + slices + 1
+            indices += [first, second, first + 1]
+            indices += [second, second + 1, first + 1]
+
+    indices = np.array(indices, dtype=np.uint32)
+    return vertices, normals, indices
 
 class PipeThread(QThread):
     new_value = pyqtSignal(np.ndarray)
@@ -53,6 +85,7 @@ class GLWidget(QtOpenGL.QGLWidget):
     def update(self, x):
         self.vert_vbo.set_array(x) 
         self.v = x
+        self.sphere_center_loc = self.v[self.sphere_center]
         self.update_normal()
 
 
@@ -142,8 +175,36 @@ class GLWidget(QtOpenGL.QGLWidget):
         gl.glColorPointer(3, gl.GL_FLOAT, 0, c.reshape(1,-1).astype(np.float32))
         gl.glDrawElements(gl.GL_TRIANGLES, len(self.f)*3, gl.GL_UNSIGNED_INT, self.f.reshape(1,-1).astype(np.uint))
 
+        
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_NORMAL_ARRAY)
+        
+        ################################
+        self.sphere_vbo.bind()
+        self.sphere_nbo.bind()
+        self.sphere_ibo.bind()
+
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glEnableClientState(gl.GL_NORMAL_ARRAY)
+
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, self.sphere_vbo)
+        gl.glNormalPointer(gl.GL_FLOAT, 0, self.sphere_nbo)
+
+        for center in self.sphere_center_loc:
+            gl.glPushMatrix()
+            gl.glTranslatef(*center)
+            gl.glScalef(*(np.ones(3)*0.1) )
+            gl.glColor3f(1.0, 0.2, 0.2)  # 빨간빛 Sphere
+            gl.glDrawElements(gl.GL_TRIANGLES, len(self.sphere_i), gl.GL_UNSIGNED_INT, self.sphere_ibo)
+            gl.glPopMatrix()
+
+        gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glDisableClientState(gl.GL_NORMAL_ARRAY)
+
+        self.sphere_ibo.unbind()
+        self.sphere_vbo.unbind()
+        self.sphere_nbo.unbind()
+        ###########end
         
 
         gl.glPopMatrix()    # restore the previous modelview matrix
@@ -170,11 +231,17 @@ class GLWidget(QtOpenGL.QGLWidget):
         
         self.shader = gldeps.Shader()
         self.shader.compile(gldeps.v_shader_src, gldeps.p_shader_src)
-        
+        self.sphere_center = [1278,1272,12,1834,243,781,2199,1447,966,3661,4390,3022,2484,4036,2253,3490,3496,268,493,1914,2044,1401,3615,4240,4114,2734,2509,978,4527,4942,4857,1140,2075,1147,4269,3360,1507,1542,1537,1528,1518,1511,3742,3751,3756,3721,3725,3732,5708,5695,2081,0,4275,6200,6213,6346,6461,5518,5957,5841,5702,5711,5533,6216,6207,6470,5517,5966,]
+        self.sphere_center_loc = self.v[self.sphere_center]
         self.vert_vbo = vbo.VBO(self.v.reshape(1,-1).astype(np.float32))
         self.f_vbo = vbo.VBO(self.f.astype(np.uint))
         self.update_normal()
-
+        
+        
+        self.sphere_v, self.sphere_n, self.sphere_i = create_uv_sphere_with_normals(np.array([0,0,0]), radius=1)
+        self.sphere_vbo = vbo.VBO(self.sphere_v,)
+        self.sphere_nbo = vbo.VBO(self.sphere_n)
+        self.sphere_ibo = vbo.VBO(self.sphere_i, target=GL_ELEMENT_ARRAY_BUFFER)
         
 
 

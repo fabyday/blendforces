@@ -21,7 +21,8 @@ class Blendshapes:
 
     def expression_pose(self, idx = None ):
         if idx is not None :
-            return np.hstack([ (self.__m_neutral.v[idx, :] - exp.v[idx, :]).reshape(-1,1) for exp in self.__m_expression])
+            # return np.hstack([ (self.__m_neutral.v[idx, :] - exp.v[idx, :]).reshape(-1,1) for exp in self.__m_expression])
+            return np.hstack([ (exp.v[idx, :] - self.__m_neutral.v[idx, :]).reshape(-1,1) for exp in self.__m_expression])
         return self.__B 
     
     def neutral_pose(self):

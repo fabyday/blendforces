@@ -40,7 +40,7 @@ class BlendForces:
     BEND_IDX:int 
     DISP_IDX :int 
 
-    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 10.0, tau = 0.01):
+    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 1.0, tau = 0.01):
         self.__m_stiffnesses = stiffnesses
         self.set_iteration_num(iteration_num)
         self.set_step_size(step_size)
@@ -143,7 +143,7 @@ class BlendForces:
         append_data = make_sparse_matrix_triplet_function(row_indices, col_indices, data)
 
         for i in range(len(neutral.v)):
-            append_data(i, i, k_p)
+            append_data(i, i, -k_p)
 
         return data, row_indices, col_indices
 
@@ -213,7 +213,7 @@ class BlendForces:
         col_indices.extend(col)
         return row_indices, col_indices, data
         
-    def __stretching_constraint_b(self, b, v : np.ndarray, e, neutral_rest_length : np.ndarray, __m_ks : float):
+    def __stretching_constraint_b(self, b, v : np.ndarray, e, neutral_rest_length : np.ndarray):
         """
             e : edge index
             v : current mesh 
@@ -250,8 +250,8 @@ class BlendForces:
             direction = delta[..., None] * normalized_spring
             pi = v1 + direction
             pj = v2 - direction
-            b[3*i : 3*i+3, :] += __m_ks * 0.5 * ( pi - pj ).reshape(-1,1)
-            b[3*j : 3*j+3, :] += __m_ks * 0.5 * ( pj - pi ).reshape(-1,1)
+            b[3*i : 3*i+3, :] += self.__m_ks * 0.5 * ( pi - pj ).reshape(-1,1)
+            b[3*j : 3*j+3, :] += self.__m_ks * 0.5 * ( pj - pi ).reshape(-1,1)
 
 
 
@@ -284,15 +284,10 @@ class BlendForces:
 
 
         for i, j in edges:
-            
             # append_data(i, i, -1.0 * self.__m_ks * 0.5); append_data(i, j, 1.0 * self.__m_ks * 0.5)
             # append_data(j, j, -1.0 * self.__m_ks * 0.5); append_data(j, i, 1.0 * self.__m_ks * 0.5)
             append_data(i, i, -1.0 * self.__m_ks* 0.5); append_data(i, j, 1.0 * self.__m_ks* 0.5)
             append_data(j, j, -1.0 * self.__m_ks* 0.5); append_data(j, i, 1.0 * self.__m_ks* 0.5)
-            # append_data(i, i, 1.0 * self.__m_ks* 0.5); append_data(i, j, -1.0 * self.__m_ks* 0.5)
-            # append_data(j, j, 1.0 * self.__m_ks* 0.5); append_data(j, i, -1.0 * self.__m_ks* 0.5)
-            
-            
             # append_data(i, i, -1.0 * self.__m_ks); append_data(i, j, 1.0 * self.__m_ks)
             # append_data(j, j, -1.0 * self.__m_ks); append_data(j, i, 1.0 * self.__m_ks)
 
@@ -366,14 +361,10 @@ class BlendForces:
         self.__m_Bi = self.__m_Ai  # Ai == Bi (only affect numerical solution procedure.)
         print(self.__m_blendshapes.neutral_mesh().e)
         func_list = []
-        #TODO
-        func_list += [functools.partial(self.__stretching_constraint_A, ks=-self.__m_ks, v = self.__m_blendshapes.neutral_pose(), edges = self.__m_blendshapes.neutral_mesh().e) ]
-        
+        func_list += [functools.partial(self.__stretching_constraint_A, ks=self.__m_ks, v = self.__m_blendshapes.neutral_pose(), edges = self.__m_blendshapes.neutral_mesh().e) ]
         # func_list += [functools.partial(self.__bend_constraint_A, sp_laplacian = self.__m_sp_laplacian_matrix, neutral_vv  = self.__m_blendshapes.neutral_pose())]
         # func_list += [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
-        
-        #TODO
-        func_list += [functools.partial(self.__displacement_constraints_A, k_p = -self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
+        func_list += [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
         
         BlendForces.STRETCH_IDX = 0
         BlendForces.BEND_IDX = 1
@@ -384,39 +375,19 @@ class BlendForces:
         data = []
         row = []
         col = []
-        self.m_As = []
         for func in func_list:
-            # data = []
-            # row = []
-            # col = []
             func(data, row, col)
             # Ai = sp.csc_matrix((data, (row, col)), shape = (self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
             # self.__m_precomputed_constraint_Ai.append(Ai)
-            # sp_mat =  sp.csc_matrix((data, (row, col)), shape = (self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
-            # self.m_As.append(sp_mat)
-            
 
-        
-        
 
         self.__m_As_sum = sp.csc_matrix((data, (row, col)), shape = (self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
-        # self.__m_As_sum = sp.csc_matrix((self.__m_vN*3, self.__m_vN*3), dtype=np.float64)
-        # for m in self.m_As :
-            # self.__m_As_sum += m.transpose()@m
-        
-        
-        
-        
         # self.__m_As_sum = functools.reduce(lambda Asum, cur : Asum + cur, self.__m_precomputed_constraint_Ai, sp.csc_matrix(self.__m_precomputed_constraint_Ai[0].shape, dtype=np.float64))
 
-        
         # self.__m_spatial_object = ch.SpatialHashing()
         # self.__m_spatial_object.append_primitives()
         # self.__m_spatial_object.precompute()
-        # import matplotlib.pyplot as plt
-        # plt.spy(self.__m_As_sum)
-        # plt.title("Constraint Matrix Sparsity")
-        # plt.show()
+        
         I = sp.identity(self.__m_sp_mass_matrix.shape[0]).tocsc()
         h = self.__m_step_size
         h2 = self.__m_step_size**2
@@ -425,7 +396,7 @@ class BlendForces:
         tmp1 = self._tmp1 = (I -  h2 * M_inv@ self.__m_As_sum)
         
         # phi = tmp1 @ tmp2 
-        self.__m_precomputed_I_Asums2 = tmp1
+            
         self.__m_precomputed_I_Asums = spchol(tmp1)
         print("precompute")
 
@@ -467,18 +438,12 @@ class BlendForces:
         """
         #disp cons 
         self.__m_b[...] = 0
-        
-        # self.__m_bd = np.zeros_like(self.__m_b)
         self.__displacement_constraints_b(self.__m_b, self.__m_kp, self.__m_blendshapes.neutral_pose(), x_t)
-        # self.__displacement_constraints_b(self.__m_bd, self.__m_kp, self.__m_blendshapes.neutral_pose(), x_t)
         # A1, b1 = self.__solve_projective_dynamaics(self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX], self.__m_b, self.__m_ks)
-        # self.__m_b += self.m_As[1].transpose()@self.__m_bd
+        
         #stretching cons 
-        # self.__m_kb
-        # self.__m_sb = np.zeros_like(self.__m_b)
-        self.__stretching_constraint_b(self.__m_b, x_t, self.__m_blendshapes.neutral_mesh().e, self.__m_nuetral_rest_stretch, self.__m_ks)
-        # self.__stretching_constraint_b(self.__m_sb , x_t, self.__m_blendshapes.neutral_mesh().e, self.__m_nuetral_rest_stretch, self.__m_ks)
-        # self.__m_b += self.m_As[0].transpose()@self.__m_sb
+        self.__stretching_constraint_b(self.__m_b, x_t, self.__m_blendshapes.neutral_mesh().e, self.__m_nuetral_rest_stretch)
+
 
         #bending cons 
         # self.__bend_constraint_b(self.__m_b, self.__m_sp_laplacian_matrix, x_t ,self.__m_blendshapes.neutral_mesh())
@@ -521,9 +486,10 @@ class BlendForces:
         h = self.__m_step_size
         h2 = self.__m_step_size**2
         M_inv = self.__m_sp_mass_matrix_inv
-        a = 0.1
+        
+        
         phi = self.__m_precomputed_I_Asums(h2 * M_inv @ B)
-        yt = self.__m_precomputed_I_Asums(prev_x_t_1.reshape(-1,1) + a*h*prev_x_acc.reshape(-1,1) + (h2*M_inv@bsums).reshape(-1,1) )
+        yt = self.__m_precomputed_I_Asums(prev_x_t_1.reshape(-1,1) + h*prev_x_acc.reshape(-1,1) + (h2*M_inv@bsums).reshape(-1,1) )
         return phi, yt
 
 
@@ -536,9 +502,8 @@ class BlendForces:
         dtSy = dt.reshape(-1,1) - S@yt
         S_Phi_dtSy = S_Phi.T@(dtSy)
 
-        result_u =np.linalg.lstsq(S_Phi, dtSy)[0]
-        print(np.linalg.norm(dt - (S@phi@result_u).reshape(-1,3)))
-        # result_u = np.linalg.solve(S_Phi_T_S_Phi, S_Phi_dtSy)
+        res =np.linalg.lstsq(S_Phi, dtSy)
+        result_u = np.linalg.solve(S_Phi_T_S_Phi, S_Phi_dtSy)
         return result_u
         
 
@@ -551,17 +516,12 @@ class BlendForces:
 
 
     def simulate_time_step(self, x_prev, x_acc_prev, u_t, phi, yt):
-         
-        exp = self.__m_blendshapes.expression_pose()
-        # x_acc_t = x_acc_prev + self.__m_step_size * (self.__m_sp_mass_matrix_inv @ (exp @ u_t)).reshape(-1, 3)
-        # x_t = x_prev + self.__m_step_size*x_acc_t
-        ###
-
-        x_t = phi @ u_t + yt
-        # x_acc_t = x_acc_prev.reshape(-1,1) + self.__m_step_size * self.__m_sp_mass_matrix_inv @ (exp@u_t + self.__m_As_sum @ x_t + self.__m_b)
-        x_acc_t_test = (x_t - x_prev.reshape(-1,1)) / self.__m_step_size
-        return x_t, x_acc_t_test
+        # appx_x_t = self.phi@u_t + self.y_t
         
+        # x_t2 = phi@u_t +yt
+        # x_t = self.__m_precomputed_I_Asums(  phi@u_t +yt )
+        x_t = phi@u_t +yt
+        x_acc_t = (x_t - x_prev.reshape(-1,1))/self.__m_step_size
         
         # self.__m_As_sum @ appx_x_t + 
 
@@ -572,49 +532,44 @@ class BlendForces:
         # x_t = x_prev + self.__m_step_size * x_acc_t
         return x_t, x_acc_t
 
-    def update(self,  new_marker_pos, frame):
+    def update(self,  new_marker_pos):
         if self.__m_first_iter_flag:
             self.__m_first_iter_flag = False 
             self.__x_prev = self.__static_solve(new_marker_pos)
             self.__x_acc_prev = np.zeros_like(self.__x_prev)
-        # self.__m_first_iter_flag = False 
-        # self.__x_prev = self.__static_solve(new_marker_pos)
-        # self.__x_acc_prev = np.zeros_like(self.__x_prev)
+      
 
-        frames = []
         x_t = self.__x_prev + self.__m_step_size* self.__x_acc_prev
-        for f in range(frame):
-            for iter_n in range(self.__m_iteration_num):
-                logger.debug("%d", iter_n)
-                self.__linearlize_forces(x_t) # update self.__m_b 
-                
-                self.phi, self.y_t = self.solve_phi_yt(self.__m_As_sum, self.__m_b, \
-                                            B = self.__m_bs_expression_matrix, \
-                                            prev_x_t_1= self.__x_prev, prev_x_acc= self.__x_acc_prev)
-                u_t = self.solve_ut(self.phi, self.y_t, new_marker_pos)
-                # u_t = np.clip(u_t, 0.0, 1.0)
-                # print(u_t)
-                x_t, x_acc_t = self.simulate_time_step(self.__x_prev, self.__x_acc_prev, u_t,  self.phi, self.y_t)
-                x_t, x_acc_t = x_t.reshape(-1,3), x_acc_t.reshape(-1,3)
-                
-                # x_t = self.__m_blendshapes.make_pose_by_weight(u_t).reshape(-1,3)
-                # x_acc_t = np.zeros_like(self.__x_prev) 
-                
-            self.__x_prev, self.__x_acc_prev = x_t, x_acc_t
-            frames.append(x_t)
-        # return x_t
-        return frames
+        for iter_n in range(self.__m_iteration_num):
+            logger.debug("%d", iter_n)
+            self.__linearlize_forces(x_t) # update self.__m_b 
+            
+            self.phi, self.y_t = self.solve_phi_yt(self.__m_As_sum, self.__m_b, \
+                                         B = self.__m_bs_expression_matrix, \
+                                         prev_x_t_1= self.__x_prev, prev_x_acc= self.__x_acc_prev)
+            u_t = self.solve_ut(self.phi, self.y_t, new_marker_pos)
+            u_t = np.clip(u_t, 0.0, 1.0)
+            # print(u_t)
+            x_t, x_acc_t = self.simulate_time_step(self.__x_prev, self.__x_acc_prev, u_t,  self.phi, self.y_t)
+            x_t, x_acc_t = x_t.reshape(-1,3), x_acc_t.reshape(-1,3)
+            
+            # x_t = self.__m_blendshapes.make_pose_by_weight(u_t).reshape(-1,3)
+            # x_acc_t = np.zeros_like(self.__x_prev) 
+            
+        self.__x_prev, self.__x_acc_prev = x_t, x_acc_t
+        return x_t
 
 
 if __name__ == "__main__":
     import os , glob 
     import cv2
     import subprocess
+    import mediapipe as mp
     import numpy as np
     
     # MediaPipe Face Mesh 초기화
-    # mp_face_mesh = mp.solutions.face_mesh
-    # face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
 
     # dlib 68개 landmark 인덱스 (MediaPipe 468개 포인트 중 dlib에 해당하는 것만 선택)
     DLIB_68_IDX = [162,234,93,58,172,136,149,148,152,377,378,365,397,288,323,454,389,71,63,105,66,107,336,
@@ -637,17 +592,9 @@ if __name__ == "__main__":
         
     import asyncio
     
-    lmk_idx = [1278,1272,12,1834,243,781,2199,1447,966,3661,4390,3022,2484,4036,2253,3490,3496,268,493,1914,2044,1401,3615,4240,4114,2734,2509,978,4527,4942,4857,1140,2075,1147,4269,3360,1507,1542,1537,1528,1518,1511,3742,3751,3756,3721,3725,3732,5708,5695,2081,0,4275,6200,6213,6346,6461,5518,5957,5841,5702,5711,5533,6216,6207,6470,5517,5966,]
-    
-    datas = []
-    for pth in glob.glob("./exported_objs/**.obj"):
-        m = mm.Mesh()
-        m.load_from_file(pth)
-        datas.append(m.v[lmk_idx, :])
-        # datas.append(m.v)
-    
     # sub = subprocess.Popen("python ./viewer.py", stdin = subprocess.PIPE)
 
+    lmk_idx = [1278,1272,12,1834,243,781,2199,1447,966,3661,4390,3022,2484,4036,2253,3490,3496,268,493,1914,2044,1401,3615,4240,4114,2734,2509,978,4527,4942,4857,1140,2075,1147,4269,3360,1507,1542,1537,1528,1518,1511,3742,3751,3756,3721,3725,3732,5708,5695,2081,0,4275,6200,6213,6346,6461,5518,5957,5841,5702,5711,5533,6216,6207,6470,5517,5966,]
 
     bshapes = blendshapes.Blendshapes(neutral, bs_list)
     bshapes.build()
@@ -657,8 +604,8 @@ if __name__ == "__main__":
     bb.precompute()
     xt = neutral[lmk_idx]
     # for it in range(50) : 
-    a = (np.sin(np.linspace(0, 100, 3000))).reshape(-1,1)
-    av = np.hstack([a, np.zeros_like(a), np.zeros_like(a)])
+    a = (np.sin(np.linspace(0, 100, 3000))*20).reshape(-1,1)
+    av = np.hstack([np.zeros_like(a), a, np.zeros_like(a)])
     ii = 0 
 
 
@@ -666,14 +613,12 @@ if __name__ == "__main__":
         A = bshapes.expression_pose(lmk_idx)
         neutral = bshapes.neutral_pose()[lmk_idx, :]
         
-        
+
         b = marker_pose.reshape(-1,1) - neutral.reshape(-1,1)
         
         w = np.linalg.solve( A.T@A, A.T @ b )
-        # w = np.linalg.lstsq(A,b)[0]
         w = np.clip(w, a_min=0.0, a_max=1.0)
-        bb = bshapes.make_pose_by_weight(w)
-        return bb
+        return bshapes.make_pose_by_weight(w)
     w = np.zeros((len(bs_list), 1))
     print(len(bs_list))
     
@@ -700,55 +645,32 @@ if __name__ == "__main__":
 
     
     def run_main(queue, loop):
-        # cap = cv2.VideoCapture(0)
-        marker = neutral[lmk_idx] 
-        ii = 0
-        aai = ii % len(datas)
-        marker = datas[ii]
-        while True : 
-        #     print("test")
-        #     ret, frame = cap.read()
-        #     if not ret:
-        #         break
-        # BGR → RGB 변환 (MediaPipe는 RGB 입력 필요)
-        # rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # result = face_mesh.process(rgb_frame)
+        cap = cv2.VideoCapture(0)
 
-        # if result.multi_face_landmarks:
-        #     for face_landmarks in result.multi_face_landmarks:
-        #         for idx in DLIB_68_IDX:
-        #             landmark = face_landmarks.landmark[idx]
-        #             x, y = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
-        #             cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)  # 랜드마크 그리기
+        while True : 
+            print("test")
+            ret, frame = cap.read()
+            if not ret:
+                break
+        # BGR → RGB 변환 (MediaPipe는 RGB 입력 필요)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = face_mesh.process(rgb_frame)
+
+        if result.multi_face_landmarks:
+            for face_landmarks in result.multi_face_landmarks:
+                for idx in DLIB_68_IDX:
+                    landmark = face_landmarks.landmark[idx]
+                    x, y = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
+                    cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)  # 랜드마크 그리기
         
             # print(it)
             # xt = xt[lmk_idx]
-            # if ii == 1:
-                # marker = neutral[lmk_idx] + av[aai, :].reshape(1,-1)
-            # marker[0:10,None, :] += av[aai, :].reshape(1,-1)
-            # xt = bb.update(marker)
-            # marker = xt[lmk_idx]
-            frame = bb.update(marker, frame=1)[0]
-            # frame = __static_solve(marker)
-            frame[lmk_idx] = datas[aai]
+            global ii
             ii += 1
-            aai = ii % len(datas)
-            marker = datas[aai]
-            # marker = frames[-1][lmk_idx]
-            # marker = tmp[lmk_idx]
-            # isi = ii % len(w)
-            # www = np.zeros_like(w)
-            # www[isi, :] = 1.0
-            # xt = bshapes.make_pose_by_weight(www)
-            # a = bshapes.expression_pose(lmk_idx).shape[-1]
-            # asyncio.run_coroutine_threadsafe(queue.put(xt), loop)
-            asyncio.run_coroutine_threadsafe(queue.put(frame), loop)
-            # asyncio.run_coroutine_threadsafe(queue.put(datas[aai]), loop)
-            # print(f"{ii}")
-            # mesh = bshapes.make_pose_by_weight(np.random.uniform(0, 1, size = a))
-            # sub.stdin.write(xt.tobytes())
-            # sub.stdin.write(xt.astype(np.float64).tobytes())
-            # sub.stdin.write(mesh.astype(np.float64).tobytes())
+            aai = ii % len(a)
+            marker = neutral[lmk_idx] + av[aai, :].reshape(1,-1)
+            xt = __static_solve(marker)
+            asyncio.run_coroutine_threadsafe(queue.put(xt), loop)
 
     import threading
     queue = asyncio.Queue()
