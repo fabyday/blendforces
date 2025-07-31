@@ -41,47 +41,91 @@ class HalfEdge:
     
 
     def build(self):
-        self.__m_edges = [[] for _ in range(3* len(self.__m_f))] 
-        self.__edge_indexkey_mapper = {}
-        self.__m_e2f = [[] for _ in range(len(self.__m_edges))] 
-        self.__m_e2e = [[] for _ in range(len(self.__m_edges))]
+        n_vertices = self.__m_v.shape[0]
+        n_faces = self.__m_f.shape[0]
+        n_halfedges = n_faces * 3
 
-        self.__m_v2f =  [ [] for _ in range(len(self.__m_v))]
-        self.__m_v2v = [set() for _ in range(len(self.__m_v))]
+        # Half-edge arrays
+        halfedge_to_vertex = np.zeros(n_halfedges, dtype=int)
+        halfedge_to_face = np.zeros(n_halfedges, dtype=int)
+        halfedge_next = np.zeros(n_halfedges, dtype=int)
+        halfedge_twin = -np.ones(n_halfedges, dtype=int)  # -1 = no twin yet
 
+        face_to_halfedge = np.zeros(n_faces, dtype=int)
+        vertex_to_halfedge = -np.ones(n_vertices, dtype=int)  # one outgoing edge per vertex
 
-        self.f2v = self.__m_f
+        # Map from (start, end) to half-edge index (for twin linking)
+        edge_map = {}
 
+        for f_id, (i0, i1, i2) in enumerate(self.__m_f):
+            # Three half-edge indices for this face
+            he0 = f_id * 3 + 0
+            he1 = f_id * 3 + 1
+            he2 = f_id * 3 + 2
 
-        # self.__m_edges = igl.edges(self.__m_f)
+            # Set connections
+            halfedge_to_vertex[he0] = i1
+            halfedge_to_vertex[he1] = i2
+            halfedge_to_vertex[he2] = i0
 
+            halfedge_next[he0] = he1
+            halfedge_next[he1] = he2
+            halfedge_next[he2] = he0
 
-        # for fi, (i, j, k) in enumerate(self.__m_f):
-        #     e_offset = fi
-            
-        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3, i, j)
-        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 1, j, k)
-        #     append_edge(self.__m_edges, self.__edge_indexkey_mapper, e_offset*3 + 2, k, i)
-            
-        #     self.__m_e2e[e_offset*3] += [-1, e_offset*3+1]
-        #     self.__m_e2e[e_offset*3+1] += [e_offset*3 , e_offset*3 +2]
-        #     self.__m_e2e[e_offset*3+2] += [e_offset *3+1 , -1]
-            
-        #     self.__m_e2f[ e_offset*3   ] = fi
-        #     self.__m_e2f[ e_offset*3+1 ] = fi
-        #     self.__m_e2f[ e_offset*3+2 ] = fi
+            halfedge_to_face[he0] = f_id
+            halfedge_to_face[he1] = f_id
+            halfedge_to_face[he2] = f_id
 
+            face_to_halfedge[f_id] = he0
 
+            # Store outgoing half-edge for vertices
+            vertex_to_halfedge[i0] = he0
+            vertex_to_halfedge[i1] = he1
+            vertex_to_halfedge[i2] = he2
 
-        #     self.__m_v2v[i] += [j,k]
-        #     self.__m_v2v[j] += [k,i]
-        #     self.__m_v2v[k] += [i,j]
+            # For twin linking
+            edges = [(i0, i1, he0), (i1, i2, he1), (i2, i0, he2)]
+            for start, end, he in edges:
+                twin_he = edge_map.get((end, start))
+                if twin_he is not None:
+                    halfedge_twin[he] = twin_he
+                    halfedge_twin[twin_he] = he
+                else:
+                    edge_map[(start, end)] = he
 
+        
+        self.halfedge_to_vertex = halfedge_to_vertex
+        self.halfedge_to_face = halfedge_to_face
+        self.halfedge_next = halfedge_next
+        self.halfedge_twin = halfedge_twin
+        self.face_to_halfedge = face_to_halfedge
+        self.vertex_to_halfedge = vertex_to_halfedge
+    
+    def neighbor(self, v_idx):
+        he_start =he= self.vertex_to_halfedge[v_idx]
+        if he_start == -1:
+            return 
+        
+        faces = []
+        neighbors = []
 
-        #     self.__m_v2f[i].append(fi)  
-        #     self.__m_v2f[j].append(fi)
-        #     self.__m_v2f[k].append(fi)
+        while True:
+            neighbor = self.halfedge_to_vertex[he]
+            face = self.halfedge_to_face[he]
+            neighbors.append(neighbor)
+            faces.append(face)
 
+            # 다음 half-edge로 이동 (twin → next)
+            twin = self.halfedge_twin[he]
+            if twin == -1:
+                break  # boundary reached
+            he = self.halfedge_next[twin]
+            if he == he_start:
+                break  # 순환 종료
+
+        return faces, neighbors 
+        
+    
     def v2v(self, v_idx):
         return self.__m_v2v[v_idx]
 
@@ -90,6 +134,7 @@ class HalfEdge:
     
     def prev_edge(self, e_idx):
         return self.__m_e2e[e_idx][0]
+    
     def next_edge(self, e_idx):
         return self.__m_e2e[e_idx][-1]
 

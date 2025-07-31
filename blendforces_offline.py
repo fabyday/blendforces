@@ -15,13 +15,13 @@ import functools
 from numba import njit
 stiffnesses_args = typing.Union[tuple, str]
 mass_args = typing.Union[typing.List[float], int, np.ndarray]
-from scipy.sparse import spdiags
 
 logger = logging.getLogger()
 
 stream_handler = logging.StreamHandler(sys.stdout)
 logger.addHandler(stream_handler)
 logging.basicConfig(level=logging.DEBUG)
+
 
 def make_sparse_matrix_triplet_function(raw_list, col_list, data_list):
     def append_data(i, j, val):
@@ -39,7 +39,7 @@ class BlendForces:
     BEND_IDX:int 
     DISP_IDX :int 
 
-    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 100.0, tau = 0.01):
+    def __init__(self, stiffnesses  : stiffnesses_args = "auto", iteration_num : int = 10, step_size = 0.16, mass : mass_args = 10.0, tau = 0.01):
         self.__m_stiffnesses = stiffnesses
         self.set_iteration_num(iteration_num)
         self.set_step_size(step_size)
@@ -50,20 +50,12 @@ class BlendForces:
 
         self.__m_tau = 0.01
 
-        data = np.load("D:\\lab\\2022\\mycode\\projective-dynamics-blendforce\\kpkskb.npz")
-        dd = data['x'].reshape(-1)
-        kp_data = dd[:6706]
-        self.__m_kp = sp.kron(np.eye(3,3), spdiags(kp_data, 0, kp_data.size, kp_data.size))
-        ks_data = dd[6706:26534]
-        self.__m_ks = sp.kron(np.eye(3,3), spdiags(np.repeat(ks_data, 2), 0, ks_data.size*2, ks_data.size*2))
-        kb_data = dd[26534:]
-        self.__m_kb = sp.kron(np.eye(3,3), spdiags(kb_data, 0 , kb_data.size, kb_data.size))
-        
+
         #TODO for testing
         # self.__m_kp = 1.0
-        # self.__m_kp = 1.0
-        # self.__m_ks = 1.0
-        # self.__m_kb = 1.0
+        self.__m_kp = 1.0
+        self.__m_ks = 1.0
+        self.__m_kb = 1.0
 
 
     def set_blendshapes(self, bld : blendshapes.Blendshapes):
@@ -378,6 +370,14 @@ class BlendForces:
         print(self.__m_blendshapes.neutral_mesh().e)
         func_list = []
         #TODO
+        func_list += [functools.partial(self.__stretching_constraint_A, ks=-self.__m_ks, v = self.__m_blendshapes.neutral_pose(), edges = self.__m_blendshapes.neutral_mesh().e) ]
+        
+        # func_list += [functools.partial(self.__bend_constraint_A, sp_laplacian = self.__m_sp_laplacian_matrix, neutral_vv  = self.__m_blendshapes.neutral_pose())]
+        # func_list += [functools.partial(self.__displacement_constraints_A, k_p = self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
+        # func_list += [functools.partial(self.__bend_constraint_A, k_p = self.__m_kb, )]
+        
+        #TODO
+        func_list += [functools.partial(self.__displacement_constraints_A, k_p = -self.__m_kp, neutral_v = self.__m_blendshapes.neutral_pose())]
         
         BlendForces.STRETCH_IDX = 0
         BlendForces.BEND_IDX = 1
@@ -385,13 +385,13 @@ class BlendForces:
         self.__m_w_coeff, self.__m_sp_neighbor_mat = geo.make_neibor_matrix(self.__m_blendshapes.neutral_mesh())
         vvv = self.__m_sp_neighbor_mat@self.__m_blendshapes.neutral_mesh().v
         self.__m_weighted_neutral_edges = self.__m_w_coeff.reshape(-1,1)* vvv
-        self.__m_precomuted_bend_const_rhs = gm.precompute_arap_synbolic_S_sums(self.__m_blendshapes.neutral_mesh())
+        
         self._m_sp_linearize_arap_mat = gm.linearize_arap_params(self.__m_blendshapes.neutral_mesh())
         
         self.__m_precomputed_constraint_Ai = {}
-        self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX] = {"coeff" : self.__m_kb, "A" : gm.bend_constraint_A( self.__m_blendshapes.neutral_mesh(), self.__m_kb)}
+        self.__m_precomputed_constraint_Ai[BlendForces.STRETCH_IDX] = {"coeff" : self.__m_kp, "A" : gm.stretching_constraint_A(-self.__m_ks, self.__m_vN, self.__m_blendshapes.neutral_mesh().e)}
         self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX] = {"coeff" : self.__m_kp, "A" : gm.displacement_constraints_A(-self.__m_kp, self.__m_vN)}
-        self.__m_precomputed_constraint_Ai[BlendForces.STRETCH_IDX] = {"coeff" : self.__m_ks, "A" : gm.stretching_constraint_A(-self.__m_ks, self.__m_vN, self.__m_blendshapes.neutral_mesh().e)}
+        self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX] = {"coeff" : self.__m_kb, "A" : gm.bend_constraint_A( self.__m_sp_laplacian_matrix, self.__m_kb)}
 
         self.__m_As_sum = sp.csc_matrix((self.__m_vN*3, self.__m_vN*3) , dtype=np.float64)
         for key, val in  self.__m_precomputed_constraint_Ai.items():
@@ -399,8 +399,7 @@ class BlendForces:
                 coeff = val["coeff"]
                 A = val["A"]
                 tmp = A.T @ A
-                # self.__m_As_sum += -coeff*A.T @ A
-                self.__m_As_sum += -A.T@ coeff @ A
+                self.__m_As_sum += -coeff*A.T @ A
 
         I = sp.identity(self.__m_sp_mass_matrix.shape[0]).tocsc()
         h = self.__m_step_size
@@ -554,20 +553,14 @@ class BlendForces:
         # x_acc_t = x_acc_prev + (s).reshape(-1,3)
         # x_t = x_prev + self.__m_step_size * x_acc_t
         return x_t, x_acc_t
-    def update2(self, new_marker_pos, frame, contact_A : sp.csc_matrix, contact_tau_array :np.ndarray, contact_coeff = 50.0):
+    def update2(self, new_marker_pos, frame):
         
         if self.__m_first_iter_flag:
             self.__m_first_iter_flag = False 
             w  = gm.static_solve(self.__m_bs_selected_netural_pose, self.__m_bs_selectec_marker_expression_matrix,  new_marker_pos)
             self.__x_prev = self.__m_blendshapes.make_pose_by_weight(w)
             self.__x_acc_prev = np.zeros_like(self.__x_prev)
-        
-        M_inv = self.__m_sp_mass_matrix_inv
-        I = sp.identity(self.__m_sp_mass_matrix.shape[0]).tocsc()
-        h2 = self.__m_step_size**2
-        M_inv = self.__m_sp_mass_matrix_inv
-        tmp1 = self._tmp1 = (I -  h2 * M_inv@ (self.__m_As_sum  +(-contact_coeff*contact_A.T@contact_A)))
-        self.__m_precomputed_I_Asums = spchol(tmp1)
+
         frames = []
         x_t = self.__x_prev + self.__m_step_size* self.__x_acc_prev
         for f in range(frame):
@@ -579,8 +572,7 @@ class BlendForces:
                             self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX]["A"], \
                                 self.__m_precomputed_constraint_Ai[BlendForces.STRETCH_IDX]["A"], \
                                     self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX]["A"] ,\
-                                        self.__m_precomuted_bend_const_rhs,self._m_sp_linearize_arap_mat, contact_A, contact_tau_array) 
-                
+                                        self.__m_weighted_neutral_edges,self._m_sp_linearize_arap_mat) 
                 self.phi, self.y_t =gm.solve_phi_yt(self.__m_b, self.__m_bs_expression_matrix, self.__m_sp_mass_matrix_inv, self.__m_precomputed_I_Asums, self.__x_prev, self.__x_acc_prev, self.__m_step_size)
                 u_t = gm.solve_ut(self.__M_S_sp_mat, self.phi, self.y_t, new_marker_pos)
                 x_t, x_acc_t = gm.simulate_time_step(self.__m_blendshapes.expression_pose(), \
@@ -592,7 +584,9 @@ class BlendForces:
                 # u_t = self.solve_ut(self.phi, self.y_t, new_marker_pos)
                 # x_t, x_acc_t = self.simulate_time_step(self.__x_prev, self.__x_acc_prev, u_t,  self.phi, self.y_t)
                 x_t, x_acc_t = x_t.reshape(-1,3), x_acc_t.reshape(-1,3)
-                self.__x_prev, self.__x_acc_prev = x_t, x_acc_t
+                
+                
+            self.__x_prev, self.__x_acc_prev = x_t, x_acc_t
             frames.append(x_t)
         return frames
     
@@ -714,7 +708,6 @@ if __name__ == "__main__":
             )
         # proc = subprocess.Popen("python ./viewer.py", stdin=subprocess.PIPE)
         ii = 0 
-        
         while True:
             data = await queue.get()
             proc.stdin.write(data)
@@ -725,55 +718,54 @@ if __name__ == "__main__":
 
     
     def run_main(queue, loop):
-        # cap = cv2.VideoCapture(0)
-        import spatialhashing as sph
+        import time
         marker = neutral[lmk_idx] 
         ii = 0
         aai = ii % len(datas)
         marker = datas[ii]
-        import time
-        hashgrid = sph.OptimSpatialHashGrid()
-        hashgrid.attach_face_data(neutral.f)
-        hashgrid.upate_vertex_data(neutral.v)
         frames = []
-        datasize = len(datas)
-        for i, marker in enumerate(datas)  : 
-            print(f"{i} th/%{datasize}")
-            candidates = hashgrid.query_overlapped_tris()
-            e, contact_A , tau_array = hashgrid.calc_forces(candidates)
-            frame = bb.update2(marker, frame=1, contact_A=contact_A, contact_tau_array=tau_array)[0]
+        # while True : 
+        # while True : 
+        #     frame = bb.update2(marker, frame=1)[0]
             
-            frame[lmk_idx] = marker
-            frames.append(frame)
-            hashgrid.upate_vertex_data(frame)
-            asyncio.run_coroutine_threadsafe(queue.put(frame), loop)
-
-        if not os.path.exists("./testanim_out"):
-            os.makedirs("./testanim_out")
-        np.save("./testanim_out/testanim.npy",  np.array(frames))
-           
+        #     frame[lmk_idx] = datas[aai]
+        #     ii += 1
+        #     aai = ii % len(datas)
+        #     marker = datas[aai]
+        #     frames.append(frame)
+        #     print("frame {}/{}".format(ii, len(datas)))
+        #     if (ii%len(datas) == 0 ) and ii > 1:
+        #         break
+        # for i in range(5):
+        #     time.sleep(1)
+        #     print("wait...{}/5".format(i+1))
+        
+        # for frame in frames:
+        #     asyncio.run_coroutine_threadsafe(queue.put(frame), loop)
+        print("static blendshapes calculate...")
+        frames = []
         marker = neutral[lmk_idx] 
         ii = 0
         aai = ii % len(datas)
         marker = datas[ii]
-        import time
         while True : 
-            start = time.time()
-            candidates = hashgrid.query_overlapped_tris()
-            # f = hashgrid.calc_forces(candidates)
-            frame = bb.update2(marker, frame=1)[0]
+            frame = __static_solve(marker)
 
-            end = time.time()
-            
-            print(f'{end - start} f/s')
             frame[lmk_idx] = datas[aai]
             ii += 1
             aai = ii % len(datas)
             marker = datas[aai]
-       
+            frames.append(frame)
+            print("frame {}/{}".format(ii, len(datas)))
+            if (ii%len(datas) == 0 ) and ii > 1:
+                break
+        for i in range(5):
+            time.sleep(1)
+            print("wait...{}/5".format(i+1))
+        
+        for frame in frames:
             asyncio.run_coroutine_threadsafe(queue.put(frame), loop)
-           
-
+        
     import threading
     queue = asyncio.Queue()
     loop = asyncio.get_event_loop()

@@ -61,15 +61,16 @@ class PipeThread(QThread):
             x = sys.stdin.buffer.read(read_byte)
             x = np.frombuffer(x, dtype=np.float64).reshape(-1, 3)
             self.new_value.emit(x)
-            self.msleep(500)
+            self.msleep(10)
 import igl 
 
 class GLWidget(QtOpenGL.QGLWidget):
     
     
     
-    def __init__(self, neutral_mesh_path  ,parent=None):
+    def __init__(self, neutral_mesh_path,  wireframe= True,parent=None):
         self.parent = parent
+        self.show_wireframe = wireframe
         QtOpenGL.QGLWidget.__init__(self, parent)
         self.v, self.f  = igl.read_triangle_mesh(neutral_mesh_path)
 
@@ -152,6 +153,8 @@ class GLWidget(QtOpenGL.QGLWidget):
         mean = np.mean(self.v, axis=0)
         bmax = np.max(self.v, axis=0)
         bmin = np.min(self.v, axis=0)
+        
+        
         self.center = (bmax + bmin)*0.5
         self.scale = np.linalg.norm(bmax - self.center)
         gl.glPushMatrix()  
@@ -175,6 +178,22 @@ class GLWidget(QtOpenGL.QGLWidget):
         gl.glColorPointer(3, gl.GL_FLOAT, 0, c.reshape(1,-1).astype(np.float32))
         gl.glDrawElements(gl.GL_TRIANGLES, len(self.f)*3, gl.GL_UNSIGNED_INT, self.f.reshape(1,-1).astype(np.uint))
 
+        
+        if self.show_wireframe:
+            gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+
+            gl.glDisable(gl.GL_LIGHTING)  # 와이어프레임은 빛 영향 X
+            gl.glColor3f(0.0,0.0,0.0)   # 흰색 와이어프레임
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+
+            # ✅ 꼭 다시 설정
+            gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+            gl.glVertexPointer(3, gl.GL_FLOAT, 0, self.v.reshape(1, -1).astype(np.float32))
+            
+            gl.glDrawElements(gl.GL_TRIANGLES, len(self.f)*3, gl.GL_UNSIGNED_INT, self.f.reshape(1,-1).astype(np.uint))
+
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+            gl.glEnable(gl.GL_LIGHTING)
         
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_NORMAL_ARRAY)
@@ -200,7 +219,7 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_NORMAL_ARRAY)
-
+        
         self.sphere_ibo.unbind()
         self.sphere_vbo.unbind()
         self.sphere_nbo.unbind()
@@ -247,23 +266,36 @@ class GLWidget(QtOpenGL.QGLWidget):
 
 class MainWindow(QMainWindow):
 
-    def __init__(self, neutral_mesh_path):
+    def __init__(self, neutral_mesh_path, pipe=True, framerate=24):
         QMainWindow.__init__(self)    # call the init for the parent class
         v, f = igl.read_triangle_mesh(neutral_mesh_path)
         shape = v.shape
         self.resize(800, 800)
         self.setWindowTitle('viewer')
-        self.worker_thread = PipeThread(shape, self)
-        self.worker_thread.start()
 
         self.glWidget = GLWidget(neutral_mesh_path, self)
         self.initGUI()
         
-        timer = QtCore.QTimer(self)
-        timer.setInterval(20)   # period, in milliseconds
-        timer.timeout.connect(self.glWidget.updateGL)
-        timer.start()
-        self.worker_thread.new_value.connect(self.glWidget.update)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(1000/framerate)   # period, in milliseconds
+        self.timer.timeout.connect(self.glWidget.updateGL)
+        self.timer.start()
+        if pipe :
+            self.worker_thread = PipeThread(shape, self)
+            self.worker_thread.start()
+            self.worker_thread.new_value.connect(self.glWidget.update)
+    
+    def add_animation(self, anim_list : np.ndarray, loop_forever = True):
+        self.anim_index = 0 
+        self.anim_list = anim_list
+        
+        self.loop_forever = loop_forever
+        self.timer.timeout.connect(self._update_anim_list)
+        
+    def _update_anim_list(self):
+        x = self.anim_list[self.anim_index]
+        self.glWidget.update(x)
+        self.anim_index = (self.anim_index+1) % len(self.anim_list)
 
     def initGUI(self):
         central_widget = QWidget()
