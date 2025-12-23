@@ -1,5 +1,4 @@
 import numpy as np
-import open3d as o3d
 from collections import defaultdict
 import mesh as mm
 import geometry_helper as geo 
@@ -181,7 +180,7 @@ class OptimSpatialHashGrid:
                 
                 
                 # ns = (w1 * self.ref_v[v1] + w2 * self.ref_v[v2] + w3 * self.ref_v[v3] - self.ref_v[v2i]) @ normal
-                ns = (self.ref_v[v2i] - w1 * self.ref_v[v1] + w2 * self.ref_v[v2] + w3 * self.ref_v[v3] ) @ normal
+                ns = (self.ref_v[v2i] - ( w1 * self.ref_v[v1] + w2 * self.ref_v[v2] + w3 * self.ref_v[v3]) ) @ normal
                 if ns > self.tau:
                     continue  # 침투가 아님
                 
@@ -189,7 +188,7 @@ class OptimSpatialHashGrid:
                 tau0 = self.tau 
                 alpha = 0.5
                 adaptive_tau = tau0 + alpha * depth
-                
+                adaptive_tau = self.tau 
                 # 힘 벡터 구성
                 # vn = self.ref_normal_v[v2i]/ ( np.linalg.norm(self.ref_normal_v[v2i]) + 1e-8)
                 w1n = -w1 * normal

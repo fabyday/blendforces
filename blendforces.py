@@ -398,9 +398,17 @@ class BlendForces:
             if(val is not None ):
                 coeff = val["coeff"]
                 A = val["A"]
-                tmp = A.T @ A
-                # self.__m_As_sum += -coeff*A.T @ A
                 self.__m_As_sum += -A.T@ coeff @ A
+        
+        # d_A = self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX]['A']
+        # c_d =   self.__m_precomputed_constraint_Ai[BlendForces.DISP_IDX]['coeff']
+        # s_A = self.__m_precomputed_constraint_Ai[BlendForces.STRETCH_IDX]['A']
+        # c_s = self.__m_precomputed_constraint_Ai[BlendForces.STRETCH_IDX]['coeff']
+        # b_A = self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX]['A']
+        # c_b = self.__m_precomputed_constraint_Ai[BlendForces.BEND_IDX]['coeff']
+        # self.__m_As_sum = -(d_A.T@c_d@d_A)
+        # self.__m_As_sum = -(s_A.T@c_s@s_A)
+        # self.__m_As_sum = -(b_A.T@c_b@b_A)
 
         I = sp.identity(self.__m_sp_mass_matrix.shape[0]).tocsc()
         h = self.__m_step_size
@@ -554,6 +562,7 @@ class BlendForces:
         # x_acc_t = x_acc_prev + (s).reshape(-1,3)
         # x_t = x_prev + self.__m_step_size * x_acc_t
         return x_t, x_acc_t
+    
     def update2(self, new_marker_pos, frame, contact_A : sp.csc_matrix, contact_tau_array :np.ndarray, contact_coeff = 50.0):
         
         if self.__m_first_iter_flag:
@@ -567,6 +576,7 @@ class BlendForces:
         h2 = self.__m_step_size**2
         M_inv = self.__m_sp_mass_matrix_inv
         tmp1 = self._tmp1 = (I -  h2 * M_inv@ (self.__m_As_sum  +(-contact_coeff*contact_A.T@contact_A)))
+        # tmp1 = self._tmp1 = (I -  h2 * M_inv @ (self.__m_As_sum))
         self.__m_precomputed_I_Asums = spchol(tmp1)
         frames = []
         x_t = self.__x_prev + self.__m_step_size* self.__x_acc_prev
@@ -760,7 +770,7 @@ if __name__ == "__main__":
         while True : 
             start = time.time()
             candidates = hashgrid.query_overlapped_tris()
-            # f = hashgrid.calc_forces(candidates)
+            f = hashgrid.calc_forces(candidates)
             frame = bb.update2(marker, frame=1)[0]
 
             end = time.time()

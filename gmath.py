@@ -258,15 +258,15 @@ def stretching_constraint_A(ks : float ,v_size : int, edges ):
         data.append(x);data.append(x);data.append(x)
 
     append_data = make_sparse_matrix_triplet_function(row, col, data)
-    # row_size = len(edges)*2*3 # edge_size*pair*dimension
     row_size = len(edges)*3*2 # edge_size*pair*dimension
     # row_size = 3*v_size
     col_size = 3 * v_size
+    
     for idx, (i, j) in enumerate(edges):
+        # append_block( 3*i  , 3*i, 0.5 ); append_block(3*i , 3*j, -0.5 )
+        # append_block( 3*j, 3*j, 0.5 ); append_block(3*j, 3*i, -0.5 )
         append_block( 6*idx + 3*0 , 3*i, 1.0 ); append_block(6 * idx + 3*0 , 3*j, -1.0 )
         append_block( 6*idx+3*1 , 3*j, 1.0 ); append_block(6 *idx + 3*1, 3*i, -1.0 )
-        # append_block( 6*idx + 3*0 , 3*i, 1.0 ); append_block(6 * idx + 3*0 , 3*j, -1.0 )
-        # append_block( 6*idx+3*1 , 3*j, 1.0 ); append_block(6 *idx + 3*1, 3*i, -1.0 )
     
     return sp.coo_matrix((data, (row, col)), shape = (row_size, col_size) , dtype=np.float64).tocsc()
 
@@ -323,14 +323,23 @@ def stretching_constraint_b(b,  v : np.ndarray, e, neutral_pose, neutral_rest_le
             normalized_spring = spring / length
             # n_length = np.linalg.norm(nv[j, :] - nv[i, :], axis=-1)
             n_length = np.sqrt(np.sum((nv[j, :] - nv[i, :])**2))
-            delta = abs(n_length - length)*0.5
+            delta = (length - n_length)*0.5
+            
+            
+            
+            
             direction = delta * normalized_spring
             pi = v1 + direction
             pj = v2 - direction
-            # b[3*(2*idx+0) : 3*(2*idx+0)+3, :] += __m_ks *  ( pi - pj ).reshape(-1,1)
-            # b[3*(2*idx+1) : 3*(2*idx+1)+3, :] += __m_ks *  ( pj - pi ).reshape(-1,1)
+            # b[3*idx : 3*idx+3, :] +=   ( pi - pj ).reshape(-1,1)
+            # b[6*idx+3*0 : 6*idx+3*0+3, :] +=   0.5*( pi - pj ).reshape(-1,1)
+            # b[6*idx+3*1 : 6*idx+3*1+3, :] +=   0.5*( pj - pi ).reshape(-1,1)
+            #orig
             b[6*idx+3*0 : 6*idx+3*0+3, :] +=   ( pi - pj ).reshape(-1,1)
             b[6*idx+3*1 : 6*idx+3*1+3, :] +=   ( pj - pi ).reshape(-1,1)
+            
+            # b[3*i : 3*i+3, :] +=  0.5* ( pi - pj ).reshape(-1,1)
+            # b[3*j : 3*j+3, :] +=  0.5* ( pj - pi ).reshape(-1,1)
 
 
 
@@ -345,12 +354,14 @@ def displacement_constraints_b(b : sp.coo_matrix, k_p : sp.coo_matrix , neutral_
     # assert(len(v) == len(neutral_v) and "len() size between neutral v and v is diff")
 
 
-    b += k_p@neutral_v.reshape(-1,1)
+    # b += k_p@neutral_v.reshape(-1,1)
+    b += neutral_v.reshape(-1,1)
+
 
 def linearize_force( b,x_t, kp, ks, kb, neutral_mesh, edge , rest_stretch, bend_A, stretch_A, disp_A, precomuted_bend_const_rhs, precomputed_neibor, contact_forces_A, contact_tau_array, contact_coeff = 50.0):
     
     stretch_b = np.zeros((stretch_A.shape[0],1) )
-    disp_b = np.zeros_like(b)
+    disp_b = np.zeros_like((len(neutral_mesh.v), 1))
     bend_b = np.zeros((bend_A.shape[0], 1))
     displacement_constraints_b(disp_b, kp, neutral_mesh.v, x_t)
     # stretching_constraint_b(stretch_b, x_t, edge, neutral_mesh.v , rest_stretch, ks)
@@ -358,13 +369,38 @@ def linearize_force( b,x_t, kp, ks, kb, neutral_mesh, edge , rest_stretch, bend_
     
     # bend_constraint_b(bend_b, x_t, bend_A, neutral_mesh, kb,precomuted_bend_const_rhs,precomputed_neibor)
     bend_constraint_b(bend_b, x_t, bend_A, neutral_mesh,precomuted_bend_const_rhs,precomputed_neibor)
-    disp_b = disp_A.T @ disp_b 
-    stretch_b = stretch_A.T @ ks @ stretch_b
+    disp_b = disp_A.T @ kp @ disp_b 
+    # stretch_b = stretch_A.T @ ks @ stretch_b
+    stretch_b = stretch_A.T@ ks @ stretch_b
+    # stretch_b = stretch_A.T@  stretch_b
     bend_b = bend_A.T@kb@bend_b
-    # contact_forces = contact_coeff*contact_forces_A.T@contact_tau_array
-    contact_forces = 1.0*contact_forces_A.T@contact_tau_array
+    contact_forces = contact_coeff*contact_forces_A.T@contact_tau_array
+    # contact_forces = 1.0*contact_forces_A.T@contact_tau_array
     # b[...] = (disp_b + stretch_b + bend_b)
     b[...] = (disp_b + stretch_b + bend_b + contact_forces)
+    # b[...] = (disp_b + stretch_b + bend_b )
+    
+def linearize_force_nonlinear( b, x_t, kp, ks, kb, neutral_mesh, edge , rest_stretch, bend_A, stretch_A, disp_A, precomuted_bend_const_rhs, precomputed_neibor, contact_forces_A, contact_tau_array, contact_coeff = 50.0):
+    
+    stretch_b = np.zeros((stretch_A.shape[0],1) )
+    disp_b = np.zeros(( neutral_mesh.v.size,1))
+    bend_b = np.zeros((bend_A.shape[0], 1))
+    displacement_constraints_b(disp_b, kp, neutral_mesh.v, x_t)
+    # stretching_constraint_b(stretch_b, x_t, edge, neutral_mesh.v , rest_stretch, ks)
+    stretching_constraint_b(stretch_b, x_t, edge, neutral_mesh.v , rest_stretch)
+    
+    # bend_constraint_b(bend_b, x_t, bend_A, neutral_mesh, kb,precomuted_bend_const_rhs,precomputed_neibor)
+    bend_constraint_b(bend_b, x_t, bend_A, neutral_mesh,precomuted_bend_const_rhs,precomputed_neibor)
+    disp_b = disp_A.T @ kp @ disp_b 
+    # stretch_b = stretch_A.T @ ks @ stretch_b
+    stretch_b = stretch_A.T@ ks @ stretch_b
+    # stretch_b = stretch_A.T@  stretch_b
+    bend_b = bend_A.T@kb@bend_b
+    contact_forces = contact_coeff*contact_forces_A.T@contact_tau_array
+    # contact_forces = 1.0*contact_forces_A.T@contact_tau_array
+    # b[...] = (disp_b + stretch_b + bend_b)
+    b[...] = (disp_b + stretch_b + bend_b + contact_forces)
+    # b[...] = (disp_b + stretch_b + bend_b )
     
     
 @njit
@@ -373,6 +409,12 @@ def simulate_time_step(expression_pose, x_prev, u_t, phi, yt, step_size):
         exp = expression_pose
         x_t = phi @ u_t + yt
         x_acc_t_test = (x_t - x_prev.reshape(-1,1)) / step_size
+        return x_t, x_acc_t_test
+    
+@njit
+def simulate_time_step_nonlinear(x_prev, x_t, step_size):
+        
+        x_acc_t_test = (x_t.reshape(-1,1) - x_prev.reshape(-1,1)) / step_size
         return x_t, x_acc_t_test
 
 # njit can't use sparse mat
@@ -383,6 +425,26 @@ def solve_phi_yt(bsums, B, sp_mass_matrix_inv, precomputed_Asums, prev_x_t_1, pr
     damping_coeff_alpha = 0.99
     phi = precomputed_Asums(h2 * M_inv @ B)
     yt = precomputed_Asums(prev_x_t_1.reshape(-1,1) + damping_coeff_alpha*h*prev_x_acc.reshape(-1,1) + (h2*M_inv@bsums).reshape(-1,1) )
+    return phi, yt
+# njit can't use sparse mat
+
+def solve_phi_yt_nonlinear(P, G, bsums, B, sp_mass_matrix_inv, precomputed_Asums, prev_x_t_1, prev_x_acc, step_size):
+    h = step_size
+    h2 = step_size**2
+    M_inv = sp_mass_matrix_inv
+    damping_coeff_alpha = 0.99
+    phi = precomputed_Asums(h2 * P.T@G @ M_inv @ B )
+    yy = (prev_x_t_1.reshape(-1,1)) + (damping_coeff_alpha*h*prev_x_acc.reshape(-1,1)) + (h2*M_inv@bsums).reshape(-1,1)
+    yt = precomputed_Asums(P.T @G@ yy)
+    return phi, yt
+def solve_phi_yt_nonlinear2(P, G, bsums, B, sp_mass_matrix_inv, precomputed_Asums, prev_x_t_1, prev_x_acc, step_size):
+    h = step_size
+    h2 = step_size**2
+    M_inv = sp_mass_matrix_inv
+    damping_coeff_alpha = 0.99
+    phi = precomputed_Asums(h2 * P.T@G @ M_inv @ B )
+    yy = (prev_x_t_1.reshape(-1,1)) + (damping_coeff_alpha*h*prev_x_acc.reshape(-1,1)) + (h2*M_inv@bsums).reshape(-1,1)
+    yt = precomputed_Asums(P.T @G@ yy)
     return phi, yt
 
 def solve_ut( S, phi, yt, dt):
@@ -397,6 +459,21 @@ def solve_ut( S, phi, yt, dt):
     result_u =np.linalg.lstsq(S_Phi, dtSy)[0]
     # result_u = np.linalg.solve(S_Phi_T_S_Phi, S_Phi_dtSy)
     return result_u
+
+def solve_ut_nonlinear( reducedGxt, phi, yt, dt):
+    
+
+    # S_Phi = S @ phi
+    S_Phi = phi
+    
+    # dtSy = dt.reshape(-1,1) - S@yt
+    dtSy = reducedGxt + dt.reshape(-1,1) - yt
+
+    result_u =np.linalg.lstsq(S_Phi, dtSy)[0]
+    # result_u = np.linalg.solve(S_Phi_T_S_Phi, S_Phi_dtSy)
+    return result_u
+
+
 @njit
 def static_solve(neutral, sel_exprs, marker_pose):
     A = sel_exprs

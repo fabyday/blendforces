@@ -31,7 +31,17 @@ def compute_vertex_normals(vertices, faces):
 
     return vertex_normals
 
+def compute_face_normals(vertices, faces):
+    face_normals = np.zeros((len(faces), 3))
 
+    for i, face in enumerate(faces):
+        v0, v1, v2 = vertices[face]
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        face_normal = np.cross(edge1, edge2)
+        face_normals[i] = face_normal / (np.linalg.norm(face_normal) + 1e-10)  # 정규화
+
+    return face_normals
 
 def cotangent_angle_for_vertex(origin_v0, v1, v2, eps=1e-8):
     # sin / cos = cot :)

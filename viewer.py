@@ -277,7 +277,7 @@ class MainWindow(QMainWindow):
         self.initGUI()
         
         self.timer = QtCore.QTimer(self)
-        self.timer.setInterval(1000/framerate)   # period, in milliseconds
+        self.timer.setInterval(1000//framerate)   # period, in milliseconds
         self.timer.timeout.connect(self.glWidget.updateGL)
         self.timer.start()
         if pipe :
